@@ -1,0 +1,21 @@
+{
+  "release": "0.3.0",
+  "date": "2026-10-07",
+  "platform": "Windows x64 / Python 3.12.14",
+  "offline_tests": {"run": 108, "passed": 107, "skipped_posix_only": 1, "failures": 0},
+  "compileall": "passed",
+  "pip_check": "passed",
+  "fresh_directory_install": "passed_offline_from_zip",
+  "fresh_install_sub2api_status": "passed_account_1_group_8",
+  "fresh_install_service_start_health_stop": "passed_without_inference",
+  "pip_target_isolation": "passed_sentinel_directory_not_created",
+  "release_input_credential_scan": {"files": 110, "selected_token_password_identity_matches": 0},
+  "live_channel_pair": {
+    "task": "confirm-constraints-07",
+    "native_codex": {"correct": true, "seconds": 58.532, "reported_model": null, "reported_effort": null},
+    "codex_http": {"correct": true, "seconds": 56.688, "reported_model": "gpt-6-astra", "reported_effort": "high"},
+    "quality_advantage_proven": false
+  },
+  "bps_full_contract": {"client_submissions": 2, "http_statuses": [403, 403]},
+  "siwc": "official_login_reached_no_new_grant_existing_json_lacks_direct_scope"
+}

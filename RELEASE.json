@@ -1,0 +1,9 @@
+{
+  "name": "Fenjue Windows local source release",
+  "version": "0.3.0",
+  "source_commit": "1000cee1dbd85d69e9a776622e24b3a1c46da2b4",
+  "python": "3.12 x64",
+  "inference_runs_during_install": 0,
+  "credentials_included": false,
+  "quality_advantage_proven": false
+}

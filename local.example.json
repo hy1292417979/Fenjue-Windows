@@ -1,0 +1,12 @@
+{
+  "study_id": "astra-smoke-20261007",
+  "profile": "smoke",
+  "seed": 20261007,
+  "max_calls": 2,
+  "timeout_seconds": 150,
+  "model": "gpt-6-astra",
+  "effort": "high",
+  "local_install": "C:/PATH/TO/Sub2API",
+  "account_id": 1,
+  "group_id": 8
+}

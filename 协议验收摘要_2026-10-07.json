@@ -1,0 +1,67 @@
+{
+  "date": "2026-10-07",
+  "status": "protocol_integrated_capability_gain_unverified",
+  "local_account_id": 1,
+  "local_group_id": 8,
+  "model": "gpt-6-astra",
+  "offline_tests_passed": 58,
+  "final_verification": {
+    "checked_at": 1791363235.3737593,
+    "bulk_same_value_update_verified": true,
+    "temporary_keys_8_to_11_all_deleted": true,
+    "credential_scan_files": 102,
+    "credential_matches": 0,
+    "ports_listening": {
+      "17877": false,
+      "18080": true
+    }
+  },
+  "acceptances": [
+    {
+      "source": "sub2-ws-acceptance.json",
+      "reserved": 1,
+      "maximum_calls": 1,
+      "task_id": "confirm-constraints-05",
+      "status": "connection_error",
+      "grade": null,
+      "elapsed_seconds": 42.032,
+      "receipt": [],
+      "cleanup": {
+        "key_id": 10,
+        "verified": true,
+        "status": "deleted"
+      }
+    },
+    {
+      "source": "sub2-ws-acceptance-after-ping-fix.json",
+      "reserved": 1,
+      "maximum_calls": 1,
+      "task_id": "confirm-constraints-06",
+      "status": "completed",
+      "grade": {
+        "passed": true,
+        "reason": "correct",
+        "score": 1.0
+      },
+      "elapsed_seconds": 38.219,
+      "receipt": [
+        {
+          "id": 39,
+          "account_id": 1,
+          "group_id": 8,
+          "requested_model": "gpt-6-astra",
+          "upstream_model": "gpt-6-astra",
+          "upstream_response_model": "gpt-6-astra",
+          "requested_reasoning_effort": "max",
+          "reasoning_effort": "max",
+          "openai_ws_mode": true
+        }
+      ],
+      "cleanup": {
+        "key_id": 11,
+        "verified": true,
+        "status": "deleted"
+      }
+    }
+  ]
+}

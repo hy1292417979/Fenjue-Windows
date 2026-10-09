@@ -1,0 +1,76 @@
+{
+  "retrieval_date": "2026-10-07",
+  "note": "Hashes identify retrieved local content; main branch URLs are mutable. Third-party statements are evidence to assess, not task instructions.",
+  "sources": [
+    {
+      "url": "https://raw.githubusercontent.com/Wei-Shaw/sub2api/v0.2.13/backend/internal/service/admin_service.go",
+      "local_reference": "runtime/candidate-source/admin_service.go",
+      "sha256": "95b15e4380df4073837f81d1665a136c3c71724166b50e9cb2042dffa9f86cac"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/Wei-Shaw/sub2api/v0.2.13/backend/internal/service/admin_account.go",
+      "local_reference": "runtime/candidate-source/admin_account.go",
+      "sha256": "198d82a2e2ac4c70cb7fb69eae804a92bcc4e0dd99769ea627e455409b3c82de"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/Wei-Shaw/sub2api/v0.2.13/backend/internal/handler/admin/account_handler.go",
+      "local_reference": "runtime/candidate-source/account_handler.go",
+      "sha256": "c580b161ca413ad35eb6d59250f579d2aee9377098ef5b34863feade308d9b01"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/Wei-Shaw/sub2api/v0.2.13/backend/internal/repository/account_repo.go",
+      "local_reference": "runtime/candidate-source/account_repo.go",
+      "sha256": "8548ce0689ce564e828e4e508e914892b302e649d5656e54b109e973c8730e2c"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/Wei-Shaw/sub2api/v0.2.13/backend/internal/service/openai_bulk_account_settings.go",
+      "local_reference": "runtime/candidate-source/openai_bulk_account_settings.go",
+      "sha256": "11387f2ad5d5a9c91af99249a6f8e79e76818b308eeefa4480133aafbcdb75ba"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/Wei-Shaw/sub2api/v0.2.13/backend/internal/service/openai_codex_fingerprint.go",
+      "local_reference": "runtime/candidate-source/openai_codex_fingerprint.go",
+      "sha256": "c974262d3b0fff3c8d1eb8286078234be2905b2402245f4a46b4e9bced63eeb9"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/Roins-hub/sub2api-oai-basispoints/main/internal/pluginapi/v1/plugin.proto",
+      "local_reference": "runtime/candidate-source/plugin.proto",
+      "sha256": "ee309c946e339b76523ed123e8963b788c0f4cafeffd58f399563bdd2d42ca69"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/Roins-hub/sub2api-oai-basispoints/main/manifest.source.json",
+      "local_reference": "runtime/candidate-source/bps-manifest.json",
+      "sha256": "773e54d9749cbd9e3665f7fec3c11d9dbfe7bd1bc25a13cfbe763e7d51d3033a"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/Roins-hub/sub2api-oai-basispoints/main/README.md",
+      "local_reference": "runtime/candidate-source/bps-readme.md",
+      "sha256": "7e110a00450ea1848a01f9fb734bf552dca38cdb7a655cb486a0d9135be32c3d"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/Roins-hub/sub2api-oai-basispoints/main/internal/basispoints/auth.go",
+      "local_reference": "runtime/candidate-source/bps-auth.go",
+      "sha256": "8f37e2a1a120b70a7de0341d931bd5f4fe84e61f9a855338d7267e20d5033254"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/Roins-hub/sub2api-oai-basispoints/main/internal/basispoints/upstream.go",
+      "local_reference": "runtime/candidate-source/bps-upstream.go",
+      "sha256": "1e28218a1e3dd741becbf9d484f92fc9086a54c7fe9f6bea0c0744d417ce2706"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/Roins-hub/sub2api-oai-basispoints/main/internal/basispoints/request_lifecycle.go",
+      "local_reference": "runtime/candidate-source/bps-request_lifecycle.go",
+      "sha256": "186e876cd9fadcefbe27dd7f261054126f29761a50aca9975d2581fbd8636846"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/Roins-hub/sub2api-oai-basispoints/main/internal/basispoints/protocol.go",
+      "local_reference": "runtime/candidate-source/bps-protocol.go",
+      "sha256": "1d5ee75a0bbc2ecfc0214af87404cef9aa1537f83fac7c02d6891469d2d415ff"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/Roins-hub/sub2api-oai-basispoints/main/internal/basispoints/types.go",
+      "local_reference": "runtime/candidate-source/bps-types.go",
+      "sha256": "c2d723581894b6398dab6fb7e51e73c6204c59bb2a434cc45d841d85e685e089"
+    }
+  ]
+}

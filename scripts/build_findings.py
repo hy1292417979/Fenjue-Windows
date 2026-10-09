@@ -1,0 +1,82 @@
+"""Recompute two counterexamples directly from the frozen task statements."""
+import itertools
+import json
+import re
+from pathlib import Path
+from fenjue.discovery.study import open_study
+
+screen_dir=Path('studies/astra-screen-proposal-20261007')
+holdout_dir=Path('studies/astra-holdout-20261007')
+screen_summary=json.loads((screen_dir/'comparison.json').read_text(encoding='utf-8'))
+with open_study(screen_dir) as screen,open_study(holdout_dir) as holdout:
+    assert len(screen.db.calls())+len(holdout.db.calls())==36
+    task=next(t for t in screen.tasks if t['id']=='screen-constraints-01')
+    weights=json.loads(re.search(r'Job weights: (\{.*?\})\.',task['prompt']).group(1))
+    a=json.loads(screen.db.outcome('sub2api:'+task['id'])['answer'])
+    b=json.loads(screen.db.outcome('codex_http:'+task['id'])['answer'])
+    assert a['order']==b['order']
+    terms=[(index+1)*weights[job] for index,job in enumerate(a['order'])]
+    checksum=sum(terms)
+    assert checksum==125 and a['checksum']==127 and b['checksum']==125
+    target=next(t for t in holdout.tasks if t['id']=='confirm-constraints-02')
+    durations=json.loads(re.search(r'Durations in minutes: (\{.*?\})\.',target['prompt']).group(1))
+    priority=json.loads(re.search(r'Priority weights: (\{.*?\})\.',target['prompt']).group(1))
+    def check(order):
+        p={job[3:]:index+1 for index,job in enumerate(order)}
+        return [abs(p['C']-p['E'])==3, min(p['E'],p['A'])<p['D']<max(p['E'],p['A']),
+                abs(p['B']-p['E'])==1,min(p['C'],p['B'])<p['G']<max(p['C'],p['B']),
+                abs(p['A']-p['F'])==1,p['E']-p['G']==2,p['B']<p['F'],abs(p['C']-p['A'])==5]
+    valid=[list(order) for order in itertools.permutations(durations) if all(check(order))]
+    assert len(valid)==1
+    holdout_rows={row['key']:row for row in holdout.db.rows('confirm')}
+    sa=json.loads(holdout_rows['sub2api:'+target['id']]['answer'])
+    sb=json.loads(holdout_rows['codex_http:'+target['id']]['answer'])
+    assert sa['order']==valid[0] and all(check(sa['order']))
+    violations=[i+1 for i,ok in enumerate(check(sb['order'])) if not ok]
+    assert violations==[3,4,6]
+    elapsed=0;weighted=0
+    for job in valid[0]:
+        elapsed+=durations[job];weighted+=priority[job]*elapsed
+    assert weighted==355
+    scores={route:sum(row['grade']['passed'] for row in holdout_rows.values() if row['route']==route)
+            for route in ('sub2api','codex_http')}
+    evidence={'screen_checksum':{'task_id':task['id'],'terms':terms,'recomputed':checksum,
+                                'sub2api':a,'codex_http':b},
+              'holdout_constraints':{'task_id':target['id'],'permutations_checked':5040,
+                                     'valid_orders':valid,'sub2api':sa,'codex_http':sb,
+                                     'direct_violated_clues':violations,'weighted_value_for_valid_order':weighted},
+              'holdout_scores':scores,'new_reserved_calls':36,
+              'unknown_completion_calls':sum(c['record'] is None for c in screen.db.calls()+holdout.db.calls()),
+              'cleanup':[screen.db.metadata('cleanup'),holdout.db.metadata('cleanup')]}
+    (holdout_dir/'independent-proof.json').write_text(json.dumps(evidence,ensure_ascii=False,indent=2),encoding='utf-8')
+    lines=['# 同账号渠道对照：证实结果 · 2026-10-07','',
+        '**已证实本轮存在双向答题差异；没有证实直接 HTTP 比 Sub2API 稳定更强，也没有证实“满血渠道”。**','',
+        '使用同一账号、gpt-6-astra、high 推理强度。每题仅取首次尝试，评分由固定程序和独立重算完成。','',
+        '| 阶段 | 有效配对 | Sub2API 正确 | 直接 HTTP 正确 |','|---|---:|---:|---:|',
+        '| 初筛 | 8 | 7 / 8 | 8 / 8 |',
+        f"| 两道未参与筛选的保留题 | 2 | {scores['sub2api']} / 2 | {scores['codex_http']} / 2 |",
+        f"| 合计（仅描述统计） | 10 | {7+scores['sub2api']} / 10 | {8+scores['codex_http']} / 10 |",'',
+        '## 两个可复核的反例','',
+        '1. **筛选题 screen-constraints-01：直连正确，Sub2API 错误。** 两端排序相同，校验和应为 `5 + 6 + 18 + 20 + 40 + 36 = 125`。直连返回 125，Sub2API 返回 127。',
+        '2. **保留题 confirm-constraints-02：Sub2API 正确，直连错误。** 题目要求同时满足八条排序约束。直连给出的顺序违反第 3、4、6 条；Sub2API 全部满足。独立枚举 5040 个排列，只有 Sub2API 给出的排列满足全部条件。其加权值为 355，直连方案给出 359；这题不是数值最优化题。','',
+        '| 约束 | 要求 | 直连顺序中的实际情况 |','|---|---|---|',
+        '| 第 3 条 | B 与 E 相邻 | 位于第 2、4 位，不相邻 |',
+        '| 第 4 条 | G 严格位于 C 与 B 之间 | C=1、B=2、G=3，未处于两者之间 |',
+        '| 第 6 条 | E 的位置减 G 的位置等于 2 | 4−3=1 |','',
+        '## 统计与协议边界','',
+        '- 初筛原定 12 题，4 对因协议适配或中断缺失被排除；没有把缺失算成任一端质量失败。',
+        '- 8 个初筛配对包含 5 个任务 family；两道保留题属于另一个共同 family。保留题按观察到的约束题错误选择了测试类别，因此阶段分开报告。',
+        '- 初筛只有一个不一致方向的 family；探索性双侧符号检验 p=1.0。保留题出现反向差异，不支持稳定单向优势。',
+        '- 本轮只有一个账号、一个时间窗口、合成任务；没有健康账号或官方同模型参考。结果不支持“全部模型能力”结论。',
+        '- 初筛有效配对耗时中位数：Sub2API 30.01 秒，直接 HTTP 32.79 秒。个别题有快慢变化，不归因于固定渠道速度优势。','',
+        '## 本轮实际确认并修复的协议问题','',
+        '直接 HTTP 多次没有返回 Content-Type，且部分 response.completed.output 为空，完整输出放在 response.output_item.done。Sub2API 会聚合这类输出。工具现已读取逐项完成事件，并继续要求真实的完成终态；截断、失败事件、冲突输出依然拒绝。',
+        '修订前的两个空工具结果已标成适配缺口，未重答；一次中断保留为完成状态未知。两次解析修订均留有代码摘要与适用调用编号。','',
+        '## 调用与交付','',
+        '本轮记账 **36 / 36 次**（初筛 32 + 保留题 4），其中 1 次中断的服务器完成状态未知。没有进一步补发。临时 Key 4、5、6、7 均已删除并核查。',
+        '另有一条不参与渠道胜负的单侧工具错误：Sub2API 算出 7966 分，独立重算为 7964 分；保留在原始证据中。',
+        '离线回归测试 39 项通过。原始任务、首答、评分、协议诊断和预算账本保存在 studies 中。','',
+        '证据文件：`studies/astra-screen-proposal-20261007/comparison.json`、`studies/astra-holdout-20261007/independent-proof.json`。','']
+    Path('证实结果_2026-10-07.md').write_text('\n'.join(lines),encoding='utf-8')
+    print(json.dumps({'screen':screen_summary['paired_correct'],'holdout':scores,
+                      'independent_holdout_permutations':5040,'valid_orders':len(valid),'calls':36},ensure_ascii=False))
