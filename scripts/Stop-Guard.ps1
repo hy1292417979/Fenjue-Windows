@@ -2,9 +2,13 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $pythonExe = Join-Path $projectRoot '.venv/Scripts/python.exe'
 Push-Location $projectRoot
+$guardMutex = New-Object System.Threading.Mutex($false, 'Local\FenjueGuardSwitch')
+$guardLock = $false
 try {
-    & $pythonExe -X utf8 -m fenjue.guard_config restore
-    if ($LASTEXITCODE -ne 0) { throw 'Restore failed; guard left running to avoid breaking Codex.' }
+    try { $guardLock = $guardMutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $guardLock = $true }
+    if (-not $guardLock) { throw 'Another Fenjue start/stop operation is running.' }
+    & $pythonExe -X utf8 -m fenjue.outbound_control disable
+    if ($LASTEXITCODE -ne 0) { throw 'Cockpit release/drain not confirmed; guard left running.' }
     $pidFile = Join-Path $projectRoot 'runtime/guard/service.pid'
     if (-not (Test-Path -LiteralPath $pidFile)) { Write-Output 'No recorded guard process.'; return }
     $servicePid = [int](Get-Content -LiteralPath $pidFile)
@@ -21,5 +25,9 @@ try {
         Remove-Item -LiteralPath $pidFile
     } elseif ($process) { throw 'PID belongs to another process; no process stopped.' }
     else { Remove-Item -LiteralPath $pidFile }
-    Write-Output 'Guard stopped; Cockpit remains running. Restart Codex to use the restored address.'
-} finally { Pop-Location }
+    Write-Output 'Fenjue OFF: Cockpit normal outbound restored. Codex address unchanged.'
+} finally {
+    if ($guardLock) { $guardMutex.ReleaseMutex() }
+    $guardMutex.Dispose()
+    Pop-Location
+}

@@ -1,8 +1,12 @@
-# 焚决：Cockpit → Codex 接入保护
+# 焚决 v3：Cockpit 出站保护
 
 2026-10-09：已按原焚决固定账号、原生路由优先、严格终态校验和完整状态续接逻辑增加 Cockpit 适配，不需要 Sub2API。目标是给 Codex 使用，不是额外聊天网页。使用和当前限制见 [COCKPIT.md](COCKPIT.md)。
 
-**当前已启用到 Codex：**已改用原生 `compaction_trigger` 协议，真实加密压缩状态、压缩后记忆/工具调用和续轮验收通过。Codex 接入地址为 `http://127.0.0.1:17878/v1`；其他设置保持不变。完全退出再打开 Codex，并开始新任务。`焚决.cmd` / `Start-Guard.cmd` 启动保护层；`Stop-Guard.cmd` 恢复 Cockpit 地址并停止保护层。旧 `Start-Cockpit.cmd` 只是 17877 聊天演示，不具备本次保护机制。协议验收不等于回答质量提升证明。
+**当前采用出站接管：Codex → Cockpit → 焚决 → 固定 GPT 账号的官方上游。** Codex 保持连接 Cockpit（本机目前为 64492），不再以 17878 作为客户端入口。`焚决.cmd` / `Start-Guard.cmd` 开启接管；`Stop-Guard.cmd` 先解除并等待在途请求结束，再停焚决；`Status-Guard.cmd` 查看实际接管状态。开关不会改 Codex 地址。首次迁移请重启 Codex 并新开任务。
+
+已备份并安装针对 Cockpit 1.3.66 的转发程序补丁；可用 `Restore-Cockpit.cmd` 恢复原程序。重启 Cockpit 保持接管；重启 Windows 后旧开关自动失效，没有开启焚决就走 Cockpit 原出站。Cockpit 更新可能覆盖补丁，请运行状态入口检查。同次开机内异常杀掉焚决不等于正常关闭：会报错而不是静默绕过，重新开启焚决或运行停止入口恢复。没有设置焚决开机自启。
+
+仅保护选定 Cockpit 接入密钥的 GPT/Codex HTTP Responses 及压缩请求，其他供应商和语音/图片独立接口不在保护范围；WebSocket 不支持。旧 `Start-Cockpit.cmd` 只是 17877 聊天演示。协议检查和请求成功不等于回答质量提升证明。实现、验收和限制见 [COCKPIT-OUTBOUND.md](COCKPIT-OUTBOUND.md)。
 
 `Install.cmd` 默认安装 Cockpit 依赖。原 Sub2API 状态入口保留为 `Sub2API-Status.cmd`，原研究代码与记录仍保留。下面的 Sub2API 地址、验收和账号说明均为原发布包历史内容，不代表当前电脑状态。
 

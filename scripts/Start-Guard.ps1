@@ -13,11 +13,15 @@ if ($LASTEXITCODE -ne 0) { throw 'Cannot secure guard runtime directory.' }
 function Test-FenjueGuard {
     try {
         $result = Invoke-RestMethod 'http://127.0.0.1:17878/health' -TimeoutSec 2
-        return ($result.service -eq 'fenjue-cockpit-guard' -and $result.version -eq '2.0')
+        return ($result.service -eq 'fenjue-cockpit-guard' -and $result.version -eq '3.0')
     } catch { return $false }
 }
 Push-Location $projectRoot
+$guardMutex = New-Object System.Threading.Mutex($false, 'Local\FenjueGuardSwitch')
+$guardLock = $false
 try {
+    try { $guardLock = $guardMutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $guardLock = $true }
+    if (-not $guardLock) { throw 'Another Fenjue start/stop operation is running.' }
     if (-not (Test-FenjueGuard)) {
         if (Get-NetTCPConnection -LocalPort 17878 -State Listen -ErrorAction SilentlyContinue) {
             throw 'Port 17878 is occupied by another service or an older guard. Run Stop-Guard.cmd before starting the updated guard.'
@@ -35,10 +39,16 @@ try {
         }
         if (-not $ready) { throw 'Guard startup timed out.' }
     }
-    if ($EnableCodex) {
-        & $pythonExe -X utf8 -m fenjue.guard_config enable
-        if ($LASTEXITCODE -ne 0) { throw 'Codex configuration was not changed.' }
-    }
-    Write-Output 'Fenjue Codex guard: http://127.0.0.1:17878/v1'
-    Write-Output 'Keep Cockpit running for login/refresh. Restart Codex after enabling.'
-} finally { Pop-Location }
+    # EnableCodex is retained for old launchers; all starts now enable outbound.
+    & $pythonExe -X utf8 -m fenjue.outbound_control enable
+    if ($LASTEXITCODE -ne 0) { throw 'Cockpit takeover was not acknowledged. Guard left running for inspection.' }
+    # One-time migration from the old frontend gateway, not a toggle operation.
+    & $pythonExe -X utf8 -m fenjue.guard_config restore
+    if ($LASTEXITCODE -ne 0) { throw 'Takeover active but old Codex URL migration needs attention.' }
+    Write-Output 'Fenjue ON: Codex -> Cockpit -> Fenjue -> pinned GPT account.'
+    Write-Output 'After first migration restart Codex. Future toggles do not change its address.'
+} finally {
+    if ($guardLock) { $guardMutex.ReleaseMutex() }
+    $guardMutex.Dispose()
+    Pop-Location
+}

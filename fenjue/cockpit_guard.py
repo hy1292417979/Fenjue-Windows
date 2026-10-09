@@ -11,6 +11,7 @@ import json
 import secrets
 import sqlite3
 import time
+from dataclasses import replace
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -215,7 +216,8 @@ def create_app(source, local_key, directory=STATE, transport=None):
             return await call_next(request)
         accepted = [local_key]
         try:
-            accepted.append(source.accepted_local_key())
+            if not request.url.path.startswith('/cockpit/'):
+                accepted.append(source.accepted_local_key())
         except Exception:
             pass
         supplied = request.headers.get('authorization', '').encode()
@@ -227,20 +229,39 @@ def create_app(source, local_key, directory=STATE, transport=None):
 
     @app.get('/health')
     async def health():
-        return {'service': 'fenjue-cockpit-guard', 'version': '2.0', 'compact_protocol': 'responses_trigger', 'quality_gain_verified': False}
+        return {'service': 'fenjue-cockpit-guard', 'version': '3.0', 'cockpit_outbound_supported': True,
+                'compact_protocol': 'responses_trigger', 'quality_gain_verified': False}
 
     @app.get('/')
     async def home():
-        return HTMLResponse('<meta charset="utf-8"><title>焚决 · Codex 接入保护</title><h1>焚决 · Codex 接入保护</h1>'
-            '<p>此服务供 Codex 使用，不是聊天网页。</p><p>接口：http://127.0.0.1:17878/v1</p>'
-            '<p>Cockpit 管理登录与刷新；焚决固定选定账号，默认直连原生 Codex 上游。'
-            '保留指令、工具和推理续接，检查返回模型与思考强度。质量提升尚未验证。</p>')
+        return HTMLResponse('<meta charset="utf-8"><title>焚决 · Cockpit 出站保护</title><h1>焚决 v3 · Cockpit 出站保护</h1>'
+            '<p>服务在线不等于接管已开启。请双击项目目录的 Status-Guard.cmd 查看实际状态。</p>'
+            '<p>新链路：Codex → Cockpit 选择固定 GPT 账号 → 焚决 → 官方上游。</p>'
+            '<p>双击焚决.cmd 开启；Stop-Guard.cmd 关闭并恢复 Cockpit 原出站。Codex 不应再设置到 17878。</p>'
+            '<p>保护仅覆盖选定接入密钥的 GPT/Codex HTTP Responses 及压缩请求；不是聊天网页。质量提升尚未验证。</p>')
 
     def snapshot():
         try:
             return source.snapshot()
         except Exception:
             raise HTTPException(503, 'Pinned Cockpit OAuth account is unavailable or its configuration changed; inspect local guard settings.') from None
+
+    def cockpit_snapshot(request):
+        info = snapshot()
+        token = request.headers.get('x-fenjue-oauth', '')
+        account = request.headers.get('x-fenjue-account', '')
+        auth_id = request.headers.get('x-fenjue-auth-id', '')
+        if (not hmac.compare_digest(token.encode(), info.token.encode())
+                or account != info.account_id
+                or auth_id.lower() != source.settings().get('auth_file', '').lower()):
+            raise HTTPException(409, 'Cockpit selected a different or stale OAuth credential; no substitution allowed.')
+        return replace(info, token=token, account_id=account)
+
+    @app.post('/cockpit/probe')
+    async def cockpit_probe(request: Request):
+        info = cockpit_snapshot(request)
+        return {'probe': 'cockpit-selected-oauth-to-fenjue', 'account_ref': info.account_ref[:12],
+                'generation_submitted': False, 'identity_matched': True}
 
     @app.get('/api/status')
     async def status():
@@ -250,7 +271,11 @@ def create_app(source, local_key, directory=STATE, transport=None):
             acceptance = {k: acceptance.get(k, False) for k in ('passed', 'tool_continuation', 'compact')}
         except (OSError, ValueError):
             acceptance = {'passed': False}
+        with ledger.db() as db:
+            last = db.execute("SELECT started,route,model,effort,status FROM calls WHERE route='cockpit_outbound' ORDER BY started DESC LIMIT 1").fetchone()
         return {'service': 'fenjue-cockpit-guard', 'account_ref': info.account_ref[:12],
+                'last_call': dict(zip(('started', 'ingress_route', 'model', 'effort', 'status'), last)) if last else None,
+                'outbound_acceptance': {'live_generation_verified': False},
                 'default_route': 'codex_http', 'cockpit_same_account_comparison_available': info.cockpit_exclusive,
                 'checks': ledger.latest_check(), 'quality_gain_verified': False, 'acceptance': acceptance,
                 'upstream_identity_basis': 'selected Cockpit OAuth credential, not independent attestation',
@@ -291,7 +316,8 @@ def create_app(source, local_key, directory=STATE, transport=None):
             raise HTTPException(429, 'All execution slots are occupied.') from None
         rid = None
         try:
-            rid = ledger.start(route, prepare(payload) if compact else payload)
+            rid = ledger.start('cockpit_outbound' if headers.get('x-fenjue-ingress') == 'cockpit' else route,
+                               prepare(payload) if compact else payload)
             result = await backend.execute(route, payload, headers, info, compact, on_headers)
             ledger.finish(rid, 'completed', result[3])
             return result
@@ -315,7 +341,11 @@ def create_app(source, local_key, directory=STATE, transport=None):
         except (ProtocolError, ValueError, TypeError):
             raise HTTPException(400, 'Unsupported request; use full Responses history with an explicit model and valid reasoning effort.') from None
         info = snapshot()
-        route = select_route(info, request.headers.get('x-fenjue-route', 'auto'))
+        outbound = request.url.path.startswith('/cockpit/')
+        if outbound:
+            # Use exactly the credential Cockpit selected, not another pool entry.
+            info = cockpit_snapshot(request)
+        route = 'codex_http' if outbound else select_route(info, request.headers.get('x-fenjue-route', 'auto'))
         if route == 'auto':
             report = ledger.latest_check()
             # Reuse the original preference/TTL logic, translating the host name.
@@ -335,10 +365,13 @@ def create_app(source, local_key, directory=STATE, transport=None):
                 raise HTTPException(409, 'Codex continuation requires session_id, conversation_id or prompt_cache_key.')
             sid = secrets.token_hex(16)
         try:
-            ledger.bind(sid, info.binding, route)
+            ledger.bind(sid, info.binding, 'cockpit_outbound' if outbound else route)
         except BindingError as exc:
             raise HTTPException(409, str(exc)) from None
         headers = dict(request.headers)
+        headers.pop('x-fenjue-ingress', None)
+        if outbound:
+            headers['x-fenjue-ingress'] = 'cockpit'
         headers.setdefault('session_id', sid)
         if compact:
             # Compact has its own schema. Never send response-only defaults.
@@ -408,6 +441,14 @@ def create_app(source, local_key, directory=STATE, transport=None):
 
     @app.post('/v1/responses/compact')
     async def compact(request: Request):
+        return await handle(request, compact=True)
+
+    @app.post('/cockpit/v1/responses')
+    async def cockpit_responses(request: Request):
+        return await handle(request)
+
+    @app.post('/cockpit/v1/responses/compact')
+    async def cockpit_compact(request: Request):
         return await handle(request, compact=True)
 
     @app.post('/api/check')

@@ -1,6 +1,19 @@
 # 焚决 · Cockpit 账号的 Codex 接入保护
 
-## 当前状态：压缩兼容已修复，已切换 Codex
+## 当前 v3：开启才接管 Cockpit 出站
+
+最新链路已变为 **Codex → Cockpit → 焚决 → 固定 GPT OAuth 官方上游**。
+
+- 开：`焚决.cmd` 或 `Start-Guard.cmd`。
+- 关：`Stop-Guard.cmd`。确认 Cockpit 解除接管、在途请求结束后才停止保护层。
+- 看状态：`Status-Guard.cmd`。关注 `takeover_active`、`guard_ready`、`installed_binary_matches` 和最近 `cockpit_outbound` 调用。
+- 恢复原版 Cockpit 转发程序：`Restore-Cockpit.cmd`（会重启 Cockpit）。原版保存在 `runtime/guard/original-cockpit-cliproxy.exe`，恢复前校验哈希。
+
+Codex 地址保持 Cockpit 的 64492；第一次从旧版本迁移后请重启 Codex、新开任务。开关不再争抢 Codex 配置。已验证关闭/开启的配置文件字节完全一致，也已验证 Cockpit 重启后接管仍然有效。同次开机内保护层异常退出不自动放行，需重新开焚决或用停止入口解除接管；Windows 重启后旧开关自动失效，没开焚决就不接管。目前没有开机自启。
+
+完整范围、真实验证与限制见 [COCKPIT-OUTBOUND.md](COCKPIT-OUTBOUND.md)。下面保留 v2 前置网关的历史验收，不代表当前入口或新链路完整验收。
+
+## 历史 v2 状态：压缩兼容修复与前置网关
 
 2026-10-09：原来的聊天网页不符合本次目标。本版把原焚决的账号固定、原生路由优先、返回校验、工具及推理状态续接机制迁移到 Cockpit。
 
