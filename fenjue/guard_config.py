@@ -63,11 +63,17 @@ def atomic_replace(path, old, new):
 def configure(action, path, directory):
     path, directory = Path(path), Path(directory)
     raw = path.read_bytes()
+    if action in ('status', 'restore'):
+        parsed = tomllib.loads(raw.decode('utf-8-sig'))
+        if parsed.get('model_provider') != PROVIDER:
+            return {'guard_enabled': False, 'changed': False, 'codex_provider_is_cockpit': False,
+                    'note': 'Active Codex provider is not Cockpit; configuration left unchanged.'}
     _, provider = inspect(raw)
     current = provider.get('base_url')
     record = directory / 'codex-url-rollback.local.json'
     if action == 'status':
-        return {'guard_enabled': current == GUARD_URL, 'base_url': current}
+        return {'guard_enabled': current == GUARD_URL, 'base_url': current,
+                'codex_provider_is_cockpit': True}
     if action in ('enable', 'record'):
         acceptance = json.loads((directory / 'acceptance.local.json').read_text())
         if acceptance.get('passed') is not True:

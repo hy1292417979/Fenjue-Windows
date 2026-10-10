@@ -56,7 +56,10 @@ def probe(source):
 
 
 def identity_probe(source):
-    snapshot = source.snapshot()
+    # The outbound path is deliberately account-dynamic.  Cockpit chooses an
+    # OAuth credential for this probe just as it does for a real request; the
+    # guard only verifies that the chosen identity arrived intact.
+    local_url, local_key = source.files()[-2:]
     config_path = Path(os.environ.get('CODEX_HOME', str(Path.home() / '.codex'))) / 'config.toml'
     model = tomllib.loads(config_path.read_text(encoding='utf-8-sig')).get('model', '')
     if not model.startswith(('gpt-', 'codex')):
@@ -64,14 +67,13 @@ def identity_probe(source):
     if not model:
         raise ValueError('No GPT model available for the non-generating identity probe.')
     with httpx.Client(trust_env=False, timeout=15, follow_redirects=False) as client:
-        response = client.post(snapshot.local_url + '/v1/fenjue/probe',
-                               headers={'Authorization': 'Bearer ' + snapshot.local_key}, json={'model': model})
+        response = client.post(local_url + '/v1/fenjue/probe',
+                               headers={'Authorization': 'Bearer ' + local_key}, json={'model': model})
         response.raise_for_status()
         result = response.json()
     if (response.headers.get('x-fenjue-cockpit') != BUILD or not result.get('identity_matched')
-            or result.get('generation_submitted') is not False
-            or result.get('account_ref') != snapshot.account_ref[:12]):
-        raise ValueError('Cockpit-to-Fenjue identity probe did not match the pinned account.')
+            or result.get('generation_submitted') is not False or not result.get('account_ref')):
+        raise ValueError('Cockpit-to-Fenjue dynamic identity probe failed.')
     return result | {'checked_at': time.time(), 'model': model}
 
 
@@ -99,16 +101,16 @@ def configure(action, state=STATE, install=INSTALL, source=None, drain_seconds=3
         if hashlib.sha256((install / 'cockpit-cliproxy.exe').read_bytes()).hexdigest() != deployment['patched_sha256']:
             raise ValueError('Cockpit binary changed (possibly updated); takeover was not enabled.')
         probe(source)
-        snapshot = source.snapshot()
+        local_url, local_key = source.files()[-2:]
         key = json.loads((state / 'gateway-key.local.json').read_text())['api_key']
         with httpx.Client(trust_env=False, timeout=5) as client:
             health = client.get('http://127.0.0.1:17878/health').json()
         if health.get('version') != '3.0' or not health.get('cockpit_outbound_supported'):
             raise ValueError('Outbound guard v3 is not ready; Cockpit left unchanged.')
-        value = {'schema': 1, 'enabled': True, 'client_key_sha256': digest(snapshot.local_key),
+        value = {'schema': 1, 'mode': 'dynamic', 'enabled': True, 'client_key_sha256': digest(local_key),
                  'boot_id': boot_id(),
                  'client_key_id': source.files()[2].get('id', ''),
-                 'auth_id': source.settings()['auth_file'], 'account_ref': digest(snapshot.account_id), 'guard_key': key}
+                 'auth_id': '', 'account_ref': '', 'guard_key': key}
         previous = json.loads(control.read_text()) if control.exists() else {'schema': 1, 'enabled': False}
         write_control(control, value)
         try:

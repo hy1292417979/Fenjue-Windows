@@ -21,10 +21,21 @@ class Source:
     def __init__(self):
         self.value = Snapshot('account-fingerprint', 'controls', 'SECRET_OAUTH', 'account', None,
                               'http://127.0.0.1:64492', 'COCKPIT_KEY', False)
+        self.dynamic = False
     def snapshot(self):
         return self.value
+    def selected_snapshot(self, token, account_id, auth_id):
+        if token == 'SECRET_OAUTH' and account_id == 'account' and auth_id == 'fixture.json':
+            return self.value
+        if token == 'OTHER_OAUTH' and account_id == 'other-account' and auth_id == 'other.json':
+            return Snapshot('other-fingerprint', 'controls-other', token, account_id, None,
+                            self.value.local_url, self.value.local_key, False)
+        raise BindingError('selected Cockpit OAuth credential is unavailable or outside the API-key scope')
     def settings(self):
-        return {'default_effort': 'max', 'timeout_seconds': 2}
+        return {'default_effort': 'max', 'timeout_seconds': 2, 'mode': 'dynamic' if self.dynamic else 'pinned'}
+    def files(self):
+        return ({}, {'modelRouting': {}}, {'accountIds': ['selected', 'other']}, [],
+                self.value.local_url, self.value.local_key)
     def accepted_local_key(self):
         return 'COCKPIT_KEY'
 
@@ -79,6 +90,22 @@ class AccountTests(unittest.TestCase):
         self.write_manifest()
         self.source.initialize()
         self.assertTrue(self.source.snapshot().cockpit_exclusive)
+
+    def test_multi_account_scope_ignores_preferred_account_and_stays_dynamic(self):
+        self.manifest['accounts'].append({
+            'id': 'second', 'authKind': 'oauth', 'authId': 'second.json', 'chatgptAccountId': 'second-account'})
+        self.manifest['apiKeys'][0]['accountIds'].append('second')
+        self.manifest['customRoutingRules'].append({'accountId': 'second', 'isPreferred': True})
+        self.write_manifest()
+        self.assertEqual(self.source.initialize(), {'account_ref': 'dynamic', 'controls_version': fingerprint(self.source.settings())[:64]})
+        self.assertEqual(self.source.settings()['mode'], 'dynamic')
+        self.assertNotIn('account', self.source.settings())
+
+    def test_selected_token_can_be_newer_than_credential_file(self):
+        (self.root / 'auth.json').write_text(json.dumps(self.auth | {'expired': 0}))
+        value = self.source.selected_snapshot('REFRESHED_TOKEN', 'account', 'auth.json')
+        self.assertEqual(value.token, 'REFRESHED_TOKEN')
+        self.assertEqual(value.account_ref, fingerprint('account'))
 
     def test_native_routing_metadata_is_not_a_model_alias(self):
         self.manifest['apiKeys'][0]['modelRouting'] = {'automatic': True, 'defaultRoute': 'oauth',
@@ -154,6 +181,34 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.requests[0].headers['authorization'], 'Bearer SECRET_OAUTH')
         self.assertEqual(self.requests[0].headers['session_id'], 'codex-session')
         self.assertEqual(r.headers['x-fenjue-route'], 'codex_http')
+
+    async def test_cockpit_selected_accounts_are_dynamic_but_session_sticky(self):
+        payload = self.payload
+        outbound_auth = {'Authorization': 'Bearer GATEWAY_KEY'}
+        first = await self.client.post('/cockpit/v1/responses', json=payload,
+                                       headers=outbound_auth | {'x-fenjue-oauth': 'SECRET_OAUTH',
+                                                            'x-fenjue-account': 'account',
+                                                            'x-fenjue-auth-id': 'fixture.json'})
+        self.assertEqual(first.status_code, 200, first.text)
+        second = await self.client.post('/cockpit/v1/responses', json=payload,
+                                        headers=outbound_auth | {'session_id': 'other-session',
+                                                             'x-fenjue-oauth': 'OTHER_OAUTH',
+                                                             'x-fenjue-account': 'other-account',
+                                                             'x-fenjue-auth-id': 'other.json'})
+        self.assertEqual(second.status_code, 200, second.text)
+        changed = await self.client.post('/cockpit/v1/responses', json=payload,
+                                         headers=outbound_auth | {'session_id': 'other-session',
+                                                              'x-fenjue-oauth': 'SECRET_OAUTH',
+                                                              'x-fenjue-account': 'account',
+                                                              'x-fenjue-auth-id': 'fixture.json'})
+        self.assertEqual(changed.status_code, 409)
+
+    async def test_dynamic_status_endpoint_reports_without_account_snapshot(self):
+        self.source.dynamic = True
+        response = await self.client.get('/api/status', headers=self.auth)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['account_ref'], 'dynamic')
+        self.assertFalse(response.json()['cockpit_same_account_comparison_available'])
 
     async def test_model_mismatch_never_reaches_codex_as_success(self):
         self.response = httpx.Response(200, json=output(model='other'))

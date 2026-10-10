@@ -1,7 +1,9 @@
 """Read Cockpit-owned OAuth credentials without copying or refreshing them.
 
 This replaces discovery.local.LocalAccountSource's Sub2API DB dependency.
-The pinned account is selected once, not changed when Cockpit reorders its pool.
+Outbound requests may use the account Cockpit selected for that request; the
+selected identity is still carried into the session binding so a conversation
+cannot silently move to another account.
 """
 import hashlib
 import json
@@ -81,40 +83,102 @@ class CockpitAccounts:
 
     def initialize(self, account=None):
         if self.settings_path.exists():
+            current = self.settings()
+            if current.get('mode') == 'dynamic':
+                return {'account_ref': 'dynamic', 'controls_version': fingerprint(current)[:64]}
             return self.snapshot().binding
         config, manifest, scope, accounts, url, key = self.files()
         if account:
             selected = [a for a in accounts if a['id'] == account]
+        elif len(accounts) == 1:
+            # A single OAuth account is equivalent to dynamic routing, but the
+            # pinned form remains useful for the legacy direct guard endpoint.
+            selected = accounts
         else:
-            preferred = {r.get('accountId') for r in manifest.get('customRoutingRules', []) if r.get('isPreferred')}
-            selected = [a for a in accounts if a['id'] in preferred]
-            if not selected and len(accounts) == 1:
-                selected = accounts
-        if len(selected) != 1:
-            raise BindingError('Set exactly one preferred GPT OAuth account in Cockpit, or explicitly select --account.')
-        chosen = selected[0]
-        value = {'schema': 1, 'account': chosen['id'], 'auth_file': chosen['authId'],
-                 'account_ref': fingerprint(chosen['chatgptAccountId']), 'default_effort': 'max',
-                 'route': 'codex_http', 'timeout_seconds': 300}
+            # Cockpit's preferred-account metadata is only a scheduling hint;
+            # it must never turn a multi-account API-key scope into a fixed
+            # credential binding.
+            selected = []
+        if len(selected) == 1:
+            chosen = selected[0]
+            value = {'schema': 1, 'mode': 'pinned', 'account': chosen['id'], 'auth_file': chosen['authId'],
+                     'account_ref': fingerprint(chosen['chatgptAccountId']), 'default_effort': 'max',
+                     'route': 'codex_http', 'timeout_seconds': 300}
+        elif account:
+            raise BindingError('The requested GPT OAuth account is not in the selected Cockpit API-key scope.')
+        else:
+            # A multi-account Cockpit key is a valid configuration.  Keep a
+            # small settings file for defaults, while outbound requests use
+            # the identity selected by Cockpit on each request.
+            value = {'schema': 2, 'mode': 'dynamic', 'default_effort': 'max',
+                     'route': 'cockpit_dynamic', 'timeout_seconds': 300}
         self.settings_path.parent.mkdir(parents=True, exist_ok=True)
         with self.settings_path.open('x', encoding='utf-8') as target:
             json.dump(value, target, indent=2)
+        if value['mode'] == 'dynamic':
+            return {'account_ref': 'dynamic', 'controls_version': fingerprint(value)[:64]}
         return self.snapshot().binding
+
+    def _policy(self, manifest, scope):
+        routing = scope.get('modelRouting') or {}
+        if (not isinstance(routing, dict) or routing.get('routes')
+                or routing.get('defaultRoute', 'oauth') != 'oauth'
+                or routing.get('failurePolicy', 'strict') != 'strict'):
+            raise BindingError('Explicit model routing is not supported by the native adapter.')
+        if scope.get('allowedModels') or scope.get('excludedModels'):
+            raise BindingError('Model-restricted access keys require an explicit policy adapter; restrictions will not be bypassed.')
+        if (manifest.get('modelAliases') or scope.get('modelPrefix')
+                or scope.get('providerGateway')):
+            raise BindingError('Model remapping must be disabled for the selected Cockpit access key.')
+        return routing
+
+    def _credential_path(self, config, auth_id):
+        if not isinstance(auth_id, str) or Path(auth_id).name != auth_id or '/' in auth_id or '\\' in auth_id:
+            raise BindingError('Invalid local credential filename.')
+        directory = Path(config['auth-dir']).resolve()
+        auth_path = (directory / auth_id).resolve()
+        if auth_path.parent != directory:
+            raise BindingError('Credential path escaped Cockpit directory.')
+        return auth_path
+
+    def selected_snapshot(self, token, account_id, auth_id):
+        """Build a snapshot from Cockpit's per-request selected OAuth identity."""
+        if (not isinstance(token, str) or not token or not isinstance(account_id, str)
+                or not isinstance(auth_id, str)
+                or any(ord(c) < 33 or ord(c) > 126 for c in token + account_id)):
+            raise BindingError('Cockpit selected an invalid OAuth credential.')
+        config, manifest, scope, accounts, url, key = self.files()
+        selected = [a for a in accounts
+                    if a.get('authId', '').lower() == auth_id.lower()]
+        if len(selected) != 1:
+            raise BindingError('Selected Cockpit account is outside this API-key scope.')
+        selected = selected[0]
+        if selected.get('authKind') != 'oauth' or selected.get('chatgptAccountId') != account_id:
+            raise BindingError('Selected Cockpit credential is not a GPT OAuth account.')
+        auth_path = self._credential_path(config, auth_id)
+        # Check the local credential's identity. Cockpit owns token validity;
+        # its in-memory refresh may arrive before this file is updated.
+        auth = read_json(auth_path)
+        if auth.get('account_id') != account_id:
+            raise BindingError('Cockpit selected OAuth identity does not match its credential file.')
+        routing = self._policy(manifest, scope)
+        controls = fingerprint([scope.get('accountIds', []), scope.get('allowedModels'),
+                                scope.get('excludedModels'), routing, selected.get('authKind'), account_id])
+        return Snapshot(fingerprint(account_id), controls, token, account_id,
+                        auth.get('proxy_url') or config.get('proxy-url') or None, url, key,
+                        set(scope.get('accountIds', [])) == {selected['id']})
 
     def snapshot(self):
         setting = read_json(self.settings_path)
+        if setting.get('mode') == 'dynamic' or not setting.get('account'):
+            raise BindingError('No pinned account is configured; use Cockpit-selected outbound routing.')
         config, manifest, scope, accounts, url, key = self.files()
         selected = [a for a in accounts if a.get('id') == setting.get('account')]
         if len(selected) != 1 or selected[0].get('authId') != setting.get('auth_file'):
             raise BindingError('Pinned GPT account was removed or replaced; no account fallback is allowed.')
         selected = selected[0]
         name = setting['auth_file']
-        if Path(name).name != name or '/' in name or '\\' in name:
-            raise BindingError('Invalid local credential filename.')
-        directory = Path(config['auth-dir']).resolve()
-        auth_path = (directory / name).resolve()
-        if auth_path.parent != directory:
-            raise BindingError('Credential path escaped Cockpit directory.')
+        auth_path = self._credential_path(config, name)
         auth = read_json(auth_path)
         token, account_id = auth.get('access_token'), auth.get('account_id')
         if (not isinstance(token, str) or not token or not isinstance(account_id, str)
@@ -128,16 +192,7 @@ class CockpitAccounts:
         proxy = auth.get('proxy_url') or config.get('proxy-url') or None
         if proxy and urlsplit(proxy).scheme not in ('http', 'https'):
             raise BindingError('This adapter supports HTTP(S) proxies only.')
-        routing = scope.get('modelRouting') or {}
-        if (not isinstance(routing, dict) or routing.get('routes')
-                or routing.get('defaultRoute', 'oauth') != 'oauth'
-                or routing.get('failurePolicy', 'strict') != 'strict'):
-            raise BindingError('Explicit model routing is not supported by the pinned native adapter.')
-        if scope.get('allowedModels') or scope.get('excludedModels'):
-            raise BindingError('Model-restricted access keys require an explicit policy adapter; restrictions will not be bypassed.')
-        if (manifest.get('modelAliases') or scope.get('modelPrefix')
-                or scope.get('providerGateway')):
-            raise BindingError('Model remapping must be disabled for the selected Cockpit access key.')
+        routing = self._policy(manifest, scope)
         controls = fingerprint([setting, scope.get('allowedModels'), scope.get('excludedModels'),
                                 routing, selected.get('authKind'), account_id])
         return Snapshot(setting['account_ref'], controls, token, account_id, proxy, url, key,

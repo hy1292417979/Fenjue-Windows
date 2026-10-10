@@ -1,7 +1,7 @@
-"""Codex gateway implementing Fenjue's original same-account route safeguards.
+"""Codex gateway implementing Fenjue's original route safeguards.
 
-Cockpit manages login/refresh. Fenjue pins an OAuth identity and uses the native
-Codex route by default, like the original Sub2API workbench's auto mode.
+Cockpit manages login/refresh and selects the OAuth identity for each outbound
+request. Direct guard ingress retains the legacy pinned route for compatibility.
 """
 import argparse
 import asyncio
@@ -20,7 +20,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
-from .cockpit_accounts import CockpitAccounts, BindingError, DIRECT, DEFAULT_CONFIG
+from .cockpit_accounts import CockpitAccounts, BindingError, DIRECT, DEFAULT_CONFIG, Snapshot, fingerprint
 from .guard_protocol import ProtocolError, prepare, prepare_compact, expected, check_response, reconcile
 from .service import choose_route
 from .sse import iter_response_events
@@ -133,15 +133,23 @@ class Backend:
                 async with client.stream('POST', endpoint, json=payload, headers=snapshot.headers(route, incoming)) as r:
                     if r.status_code != 200:
                         raise ProtocolError(f'Upstream HTTP {r.status_code}; no account, model or route fallback was attempted.')
-                    headers = {name: r.headers[name] for name in ('x-codex-turn-state', 'x-request-id') if name in r.headers}
+                    response_headers = {name: r.headers[name] for name in ('x-codex-turn-state', 'x-request-id') if name in r.headers}
                     if on_headers:
-                        on_headers(headers)
+                        on_headers(response_headers)
                     content_type = r.headers.get('content-type', '').split(';')[0]
                     async for chunk in r.aiter_bytes():
                         raw.extend(chunk)
                         if len(raw) > MAX_BYTES:
                             raise ProtocolError('Upstream response exceeded 32 MiB; response was not truncated.')
-        if self.source.snapshot().binding != snapshot.binding:
+        if incoming.get('x-fenjue-ingress') == 'cockpit':
+            selected = getattr(self.source, 'selected_snapshot', None)
+            current = (selected(incoming.get('x-fenjue-oauth', ''),
+                                incoming.get('x-fenjue-account', ''),
+                                incoming.get('x-fenjue-auth-id', ''))
+                       if selected is not None else self.source.snapshot())
+        else:
+            current = self.source.snapshot()
+        if current.binding != snapshot.binding:
             raise BindingError('Account binding changed while the response was in flight.')
         if compact and not native_compact:
             response = strict_json(raw)
@@ -153,7 +161,7 @@ class Backend:
                 raise ProtocolError('Incomplete compaction result; opaque compaction state is required. Shape: ' + json.dumps(shape))
             if response.get('model', payload['model']) != payload['model']:
                 raise ProtocolError('Compaction model mismatch.')
-            return response, [], headers, {'compaction_verified': True}
+            return response, [], response_headers, {'compaction_verified': True}
         frames, response = [], None
         if content_type == 'text/event-stream' or (not content_type and raw.lstrip().startswith((b'data:', b'event:'))):
             state = {'items': {}, 'events': {}}
@@ -189,10 +197,10 @@ class Backend:
             compacted = {key: response[key] for key in ('id', 'created_at', 'output', 'usage') if key in response}
             compacted['object'] = 'response.compaction'
             evidence['compaction_protocol'] = 'responses_trigger'
-            return compacted, [], headers, evidence
+            return compacted, [], response_headers, evidence
         if not frames:
             frames = list(iter_response_events(response))
-        return response, frames, headers, evidence
+        return response, frames, response_headers, evidence
 
 
 def create_app(source, local_key, directory=STATE, transport=None):
@@ -236,7 +244,7 @@ def create_app(source, local_key, directory=STATE, transport=None):
     async def home():
         return HTMLResponse('<meta charset="utf-8"><title>焚决 · Cockpit 出站保护</title><h1>焚决 v3 · Cockpit 出站保护</h1>'
             '<p>服务在线不等于接管已开启。请双击项目目录的 Status-Guard.cmd 查看实际状态。</p>'
-            '<p>新链路：Codex → Cockpit 选择固定 GPT 账号 → 焚决 → 官方上游。</p>'
+            '<p>新链路：Codex → Cockpit 当前选中的 GPT OAuth 账号 → 焚决 → 官方上游。</p>'
             '<p>双击焚决.cmd 开启；Stop-Guard.cmd 关闭并恢复 Cockpit 原出站。Codex 不应再设置到 17878。</p>'
             '<p>保护仅覆盖选定接入密钥的 GPT/Codex HTTP Responses 及压缩请求；不是聊天网页。质量提升尚未验证。</p>')
 
@@ -244,18 +252,29 @@ def create_app(source, local_key, directory=STATE, transport=None):
         try:
             return source.snapshot()
         except Exception:
-            raise HTTPException(503, 'Pinned Cockpit OAuth account is unavailable or its configuration changed; inspect local guard settings.') from None
+            raise HTTPException(503, 'Cockpit OAuth account is unavailable or its configuration changed; inspect local guard settings.') from None
 
     def cockpit_snapshot(request):
-        info = snapshot()
         token = request.headers.get('x-fenjue-oauth', '')
         account = request.headers.get('x-fenjue-account', '')
         auth_id = request.headers.get('x-fenjue-auth-id', '')
-        if (not hmac.compare_digest(token.encode(), info.token.encode())
-                or account != info.account_id
-                or auth_id.lower() != source.settings().get('auth_file', '').lower()):
-            raise HTTPException(409, 'Cockpit selected a different or stale OAuth credential; no substitution allowed.')
-        return replace(info, token=token, account_id=account)
+        if not token or not account or not auth_id:
+            raise HTTPException(409, 'Cockpit did not provide the selected OAuth credential.')
+        try:
+            selected = getattr(source, 'selected_snapshot', None)
+            if selected is not None:
+                return selected(token, account, auth_id)
+            # Compatibility for older test/source adapters that only expose a
+            # pinned snapshot. Production Cockpit sources use selected_snapshot.
+            info = snapshot()
+            if (not hmac.compare_digest(token.encode(), info.token.encode())
+                    or account != info.account_id
+                    or auth_id.lower() != source.settings().get('auth_file', '').lower()):
+                raise BindingError('Cockpit selected a different or stale OAuth credential; no substitution allowed.')
+            return replace(info, token=token, account_id=account)
+        except BindingError as exc:
+            status = 403 if 'outside' in str(exc).lower() or 'scope' in str(exc).lower() else 409
+            raise HTTPException(status, str(exc)) from None
 
     @app.post('/cockpit/probe')
     async def cockpit_probe(request: Request):
@@ -265,7 +284,24 @@ def create_app(source, local_key, directory=STATE, transport=None):
 
     @app.get('/api/status')
     async def status():
-        info = snapshot()
+        dynamic = False
+        try:
+            settings = source.settings()
+            dynamic = settings.get('mode') == 'dynamic'
+            if dynamic:
+                _, manifest, scope, accounts, url, key = source.files()
+                controls = fingerprint([
+                    scope.get('accountIds', []),
+                    scope.get('allowedModels'),
+                    scope.get('excludedModels'),
+                    scope.get('modelRouting'),
+                    [a.get('id') for a in accounts],
+                ])
+                info = Snapshot('dynamic', controls, '', '', None, url, key, False)
+            else:
+                info = snapshot()
+        except BindingError as exc:
+            raise HTTPException(503, str(exc)) from None
         try:
             acceptance = json.loads((Path(directory) / 'acceptance.local.json').read_text())
             acceptance = {k: acceptance.get(k, False) for k in ('passed', 'tool_continuation', 'compact')}
@@ -276,7 +312,8 @@ def create_app(source, local_key, directory=STATE, transport=None):
         return {'service': 'fenjue-cockpit-guard', 'account_ref': info.account_ref[:12],
                 'last_call': dict(zip(('started', 'ingress_route', 'model', 'effort', 'status'), last)) if last else None,
                 'outbound_acceptance': {'live_generation_verified': False},
-                'default_route': 'codex_http', 'cockpit_same_account_comparison_available': info.cockpit_exclusive,
+                'default_route': 'codex_http',
+                'cockpit_same_account_comparison_available': False if dynamic else info.cockpit_exclusive,
                 'checks': ledger.latest_check(), 'quality_gain_verified': False, 'acceptance': acceptance,
                 'upstream_identity_basis': 'selected Cockpit OAuth credential, not independent attestation',
                 'delivery': 'validated_buffered_sse', 'default_effort_when_omitted': source.settings().get('default_effort', 'max')}
@@ -340,11 +377,10 @@ def create_app(source, local_key, directory=STATE, transport=None):
             prepared = prepare(original, source.settings().get('default_effort', 'max'))
         except (ProtocolError, ValueError, TypeError):
             raise HTTPException(400, 'Unsupported request; use full Responses history with an explicit model and valid reasoning effort.') from None
-        info = snapshot()
         outbound = request.url.path.startswith('/cockpit/')
-        if outbound:
-            # Use exactly the credential Cockpit selected, not another pool entry.
-            info = cockpit_snapshot(request)
+        # For Cockpit ingress, bind this request to the identity Cockpit chose
+        # for this call. Direct guard ingress retains the legacy pinned route.
+        info = cockpit_snapshot(request) if outbound else snapshot()
         route = 'codex_http' if outbound else select_route(info, request.headers.get('x-fenjue-route', 'auto'))
         if route == 'auto':
             report = ledger.latest_check()

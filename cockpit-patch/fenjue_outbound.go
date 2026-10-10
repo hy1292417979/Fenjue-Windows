@@ -38,6 +38,7 @@ var fenjueClient = &http.Client{Transport: &http.Transport{Proxy: nil, ResponseH
 
 type fenjueControl struct {
 	Schema          int    `json:"schema"`
+	Mode            string `json:"mode"`
 	Enabled         bool   `json:"enabled"`
 	ClientKeySHA256 string `json:"client_key_sha256"`
 	AuthID          string `json:"auth_id"`
@@ -60,7 +61,9 @@ func readFenjueControl() (fenjueControl, error) {
 	if len(raw) > 8192 || json.Unmarshal(raw, &cfg) != nil || cfg.Schema != 1 {
 		return cfg, errors.New("Fenjue control invalid")
 	}
-	if cfg.Enabled && (len(cfg.ClientKeySHA256) != 64 || len(cfg.AccountRef) != 64 || cfg.AuthID == "" || len(cfg.GuardKey) < 24) {
+	dynamic := strings.EqualFold(strings.TrimSpace(cfg.Mode), "dynamic")
+	if cfg.Enabled && (len(cfg.ClientKeySHA256) != 64 || len(cfg.GuardKey) < 24 ||
+		(!dynamic && (len(cfg.AccountRef) != 64 || cfg.AuthID == ""))) {
 		return cfg, errors.New("Fenjue binding incomplete")
 	}
 	if cfg.Enabled {
@@ -169,26 +172,51 @@ func (s *relayServer) fenjueMiddleware() gin.HandlerFunc {
 			writeAPIError(c, 503, "Cockpit account manager unavailable", "fenjue_no_account")
 			return
 		}
-		account := s.manifest.accountByAuthID[strings.ToLower(cfg.AuthID)]
-		allowed := false
-		if account != nil {
-			for _, id := range spec.AccountIDs {
-				if id == account.ID {
-					allowed = true
-				}
-			}
-		}
-		if !allowed {
-			writeAPIError(c, 403, "Pinned account is outside this Cockpit API key scope", "fenjue_scope_denied")
-			return
-		}
 		_, opts := buildExecutorRequest(c, body, model, sdktranslator.FormatOpenAIResponse, "", false)
 		if opts.Metadata == nil {
 			opts.Metadata = map[string]any{}
 		}
-		opts.Metadata[cliproxyexecutor.PinnedAuthMetadataKey] = cfg.AuthID
+		dynamic := strings.EqualFold(strings.TrimSpace(cfg.Mode), "dynamic")
+		if !dynamic {
+			account := s.manifest.accountByAuthID[strings.ToLower(cfg.AuthID)]
+			allowed := false
+			if account != nil {
+				for _, id := range spec.AccountIDs {
+					if id == account.ID {
+						allowed = true
+					}
+				}
+			}
+			if !allowed {
+				writeAPIError(c, 403, "Pinned account is outside this Cockpit API key scope", "fenjue_scope_denied")
+				return
+			}
+			opts.Metadata[cliproxyexecutor.PinnedAuthMetadataKey] = cfg.AuthID
+		}
 		auth, err := s.authManager.SelectAuthByKind(relayContext(c), "codex", model, coreauth.AuthKindOAuth, opts)
-		if err != nil || auth == nil || !strings.EqualFold(auth.ID, cfg.AuthID) || fenjueHash(codexAuthChatGPTAccountID(auth)) != cfg.AccountRef {
+		if err != nil || auth == nil {
+			if dynamic {
+				writeAPIError(c, 503, "No Cockpit GPT OAuth account is available in this API-key scope", "fenjue_account_unavailable")
+			} else {
+				writeAPIError(c, 503, "Pinned Cockpit GPT account unavailable; no account fallback", "fenjue_account_unavailable")
+			}
+			return
+		}
+		account := s.manifest.accountByAuthID[strings.ToLower(auth.ID)]
+		allowed := false
+		if account != nil && strings.EqualFold(account.AuthKind, "oauth") {
+			for _, id := range spec.AccountIDs {
+				if id == account.ID {
+					allowed = true
+					break
+				}
+			}
+		}
+		if !allowed {
+			writeAPIError(c, 403, "Selected Cockpit account is outside this API key scope", "fenjue_scope_denied")
+			return
+		}
+		if !dynamic && (!strings.EqualFold(auth.ID, cfg.AuthID) || fenjueHash(codexAuthChatGPTAccountID(auth)) != cfg.AccountRef) {
 			writeAPIError(c, 503, "Pinned Cockpit GPT account unavailable; no account fallback", "fenjue_account_unavailable")
 			return
 		}

@@ -5,6 +5,8 @@ Push-Location $projectRoot
 try {
     & $pythonExe -X utf8 -m fenjue.outbound_control status
     if ($LASTEXITCODE -ne 0) { throw 'Cockpit takeover status unavailable; do not assume protection is active.' }
+    & $pythonExe -X utf8 -m fenjue.guard_config status
+    if ($LASTEXITCODE -ne 0) { throw 'Codex provider status unavailable.' }
     try {
         $keyPath = Join-Path $projectRoot 'runtime/guard/gateway-key.local.json'
         $guardKey = (Get-Content -LiteralPath $keyPath -Raw | ConvertFrom-Json).api_key

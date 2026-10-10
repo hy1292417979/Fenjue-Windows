@@ -27,7 +27,7 @@ try {
             throw 'Port 17878 is occupied by another service or an older guard. Run Stop-Guard.cmd before starting the updated guard.'
         }
         & $pythonExe -X utf8 -m fenjue.cockpit_guard --initialize
-        if ($LASTEXITCODE -ne 0) { throw 'Pinned Cockpit account could not be initialized.' }
+        if ($LASTEXITCODE -ne 0) { throw 'Cockpit OAuth account routing could not be initialized.' }
         $process = Start-Process -FilePath $pythonExe -ArgumentList @('-X','utf8','-m','fenjue.cockpit_guard') -WorkingDirectory $projectRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $runtimePath 'stdout.log') -RedirectStandardError (Join-Path $runtimePath 'stderr.log')
         $process.Id | Set-Content -LiteralPath (Join-Path $runtimePath 'service.pid')
         $ready = $false
@@ -45,7 +45,12 @@ try {
     # One-time migration from the old frontend gateway, not a toggle operation.
     & $pythonExe -X utf8 -m fenjue.guard_config restore
     if ($LASTEXITCODE -ne 0) { throw 'Takeover active but old Codex URL migration needs attention.' }
-    Write-Output 'Fenjue ON: Codex -> Cockpit -> Fenjue -> pinned GPT account.'
+    $codexRoute = & $pythonExe -X utf8 -m fenjue.guard_config status | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0) { throw 'Takeover active but Codex provider status is unavailable.' }
+    Write-Output 'Fenjue ON: Cockpit selected OAuth account -> Fenjue -> official upstream.'
+    if (-not $codexRoute.codex_provider_is_cockpit) {
+        Write-Output 'Codex is currently using another provider; its requests will not enter Cockpit/Fenjue.'
+    }
     Write-Output 'After first migration restart Codex. Future toggles do not change its address.'
 } finally {
     if ($guardLock) { $guardMutex.ReleaseMutex() }

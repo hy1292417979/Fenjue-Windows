@@ -1,8 +1,8 @@
 # 焚决 v3：Cockpit 出站保护
 
-2026-10-09：已按原焚决固定账号、原生路由优先、严格终态校验和完整状态续接逻辑增加 Cockpit 适配，不需要 Sub2API。目标是给 Codex 使用，不是额外聊天网页。使用和当前限制见 [COCKPIT.md](COCKPIT.md)。
+2026-10-09：已按原焚决的原生路由优先、严格终态校验和完整状态续接逻辑增加 Cockpit 适配，不需要 Sub2API。目标是给 Codex 使用，不是额外聊天网页。使用和当前限制见 [COCKPIT.md](COCKPIT.md)。
 
-**当前采用出站接管：Codex → Cockpit → 焚决 → 固定 GPT 账号的官方上游。** Codex 保持连接 Cockpit（本机目前为 64492），不再以 17878 作为客户端入口。`焚决.cmd` / `Start-Guard.cmd` 开启接管；`Stop-Guard.cmd` 先解除并等待在途请求结束，再停焚决；`Status-Guard.cmd` 查看实际接管状态。开关不会改 Codex 地址。首次迁移请重启 Codex 并新开任务。
+**当前采用出站接管：Codex → Cockpit → 焚决 → Cockpit 当前选中的 GPT OAuth 账号官方上游。** Codex 保持连接 Cockpit（本机目前为 64492），不再以 17878 作为客户端入口。`焚决.cmd` / `Start-Guard.cmd` 开启接管；`Stop-Guard.cmd` 先解除并等待在途请求结束，再停焚决；`Status-Guard.cmd` 查看实际接管状态。开关不会改 Codex 地址。首次迁移请重启 Codex 并新开任务。
 
 已备份并安装针对 Cockpit 1.3.66 的转发程序补丁；可用 `Restore-Cockpit.cmd` 恢复原程序。重启 Cockpit 保持接管；重启 Windows 后旧开关自动失效，没有开启焚决就走 Cockpit 原出站。Cockpit 更新可能覆盖补丁，请运行状态入口检查。同次开机内异常杀掉焚决不等于正常关闭：会报错而不是静默绕过，重新开启焚决或运行停止入口恢复。没有设置焚决开机自启。
 

@@ -152,3 +152,46 @@ func TestFenjueNewBootDefaultsOff(t *testing.T) {
 		t.Fatal("new boot must default off")
 	}
 }
+
+func TestFenjueUsesCockpitSelectedPoolAndKeepsSessionSticky(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	path := filepath.Join(t.TempDir(), "control.json")
+	oldPath, oldClient, oldBoot := fenjueControlPath, fenjueClient, fenjueBootID
+	fenjueControlPath = func() string { return path }
+	fenjueBootID = func() (string, error) { return "fixture-boot", nil }
+	t.Cleanup(func() { fenjueControlPath, fenjueClient, fenjueBootID = oldPath, oldClient, oldBoot })
+	data, _ := json.Marshal(fenjueControl{Schema: 1, Mode: "dynamic", Enabled: true, ClientKeySHA256: fenjueHash("fixture-key"), GuardKey: strings.Repeat("k", 32), BootID: "fixture-boot"})
+	if err := os.WriteFile(path, data, 0600); err != nil { t.Fatal(err) }
+	m := loadAutomaticRoutingManifest(t, `{"accounts":[{"id":"one","authId":"one.json","authKind":"oauth","chatgptAccountId":"account-one"},{"id":"two","authId":"two.json","authKind":"oauth","chatgptAccountId":"account-two"}],"apiKeys":[{"key":"fixture-key","enabled":true,"accountIds":["one","two"]}],"modelIds":["gpt-6-astra"]}`)
+	var cfg config.Config
+	cfg.Routing.SessionAffinity = true
+	cfg.Routing.SessionAffinityTTL = "1h"
+	manager := coreauth.NewManager(nil, buildCoreAuthSelector(&cfg, &coreauth.RoundRobinSelector{}, m, nil), nil)
+	manager.RegisterExecutor(native.NewCodexExecutor(&config.Config{}))
+	for _, item := range []struct{id, account, token string}{
+		{"one.json", "account-one", "oauth-one"}, {"two.json", "account-two", "oauth-two"},
+	} {
+		if _, err := manager.Register(context.Background(), &coreauth.Auth{ID: item.id, Provider: "codex", Status: coreauth.StatusActive, Attributes: map[string]string{"auth_kind": "oauth"}, Metadata: map[string]any{"access_token": item.token, "account_id": item.account}}); err != nil { t.Fatal(err) }
+		registry.GetGlobalRegistry().RegisterClient(item.id, "codex", []*registry.ModelInfo{{ID: "gpt-6-astra", Object: "model"}})
+		id := item.id
+		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(id) })
+	}
+	s := &relayServer{manifest: m, authManager: manager}
+	router := gin.New()
+	router.Use(fenjueCapture())
+	router.Use(func(c *gin.Context) { c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), clientAPIKeyContextKey, &m.APIKeys[0])); c.Next() })
+	router.Use(s.fenjueMiddleware())
+	router.POST("/v1/responses", func(c *gin.Context) { c.String(200, "ordinary") })
+	calls := make([]string, 0, 3)
+	fenjueClient = &http.Client{Transport: fenjueTransport(func(r *http.Request) (*http.Response, error) {
+		calls = append(calls, r.Header.Get("X-Fenjue-Auth-ID"))
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"status":"completed","output":[]}`))}, nil
+	})}
+	for _, session := range []string{"session-a", "session-a", "session-b"} {
+		req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(`{"model":"gpt-6-astra","input":"hi"}`))
+		req.Header.Set("Session_id", session)
+		w := httptest.NewRecorder(); router.ServeHTTP(w, req)
+		if w.Code != 200 { t.Fatalf("session=%s code=%d %s", session, w.Code, w.Body.String()) }
+	}
+	if len(calls) != 3 || calls[0] != calls[1] || calls[0] == calls[2] { t.Fatalf("unexpected session selection: %#v", calls) }
+}

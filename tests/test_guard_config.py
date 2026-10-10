@@ -52,6 +52,16 @@ class ConfigTests(unittest.TestCase):
             self.assertFalse(configure('restore', config, root)['changed'])
             self.assertEqual(config.read_text(), SAMPLE)
 
+    def test_other_active_provider_is_reported_without_overwrite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / 'config.toml'
+            original = SAMPLE.replace('model_provider = "codex_local_access"', 'model_provider = "other"')
+            config.write_text(original)
+            self.assertFalse(configure('status', config, root)['codex_provider_is_cockpit'])
+            self.assertFalse(configure('restore', config, root)['changed'])
+            self.assertEqual(config.read_text(), original)
+
     def test_restore_changes_only_url_and_follows_current_cockpit_port(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -27,8 +27,9 @@ class OutboundGuardTests(unittest.IsolatedAsyncioTestCase):
                            'x-fenjue-account': 'account', 'x-fenjue-auth-id': 'fixture.json'}
                 for override in ({'Authorization': 'Bearer COCKPIT_KEY'}, {'x-fenjue-oauth': 'other'}, {'x-fenjue-account': 'other'}, {'x-fenjue-auth-id': 'other'}):
                     r = await client.post('/cockpit/v1/responses', json=payload, headers=headers | override)
-                    self.assertIn(r.status_code, (401, 409))
+                    self.assertIn(r.status_code, (401, 403, 409))
                 self.assertEqual(requests, [])
+                headers['Authorization'] = 'Bearer guard-key'
                 probe = await client.post('/cockpit/probe', json={}, headers=headers)
                 self.assertEqual(probe.status_code, 200)
                 self.assertFalse(probe.json()['generation_submitted'])
