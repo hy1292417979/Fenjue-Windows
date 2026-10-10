@@ -123,6 +123,19 @@ func TestFenjueFailClosedAndNoWebsocket(t *testing.T) {
 	}
 }
 
+func TestFenjueWebsocketRemainsNativeCockpitHandler(t *testing.T) {
+	router, set, count := fenjueFixture(t)
+	set(true)
+	req := httptest.NewRequest("GET", "/v1/responses", nil)
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != 200 || w.Body.String() != "ordinary" || *count != 1 {
+		t.Fatalf("native WebSocket handler was intercepted: code=%d body=%q count=%d", w.Code, w.Body.String(), *count)
+	}
+}
+
 func TestFenjueDisabledStateAndStatus(t *testing.T) {
 	router, _, _ := fenjueFixture(t)
 	w := httptest.NewRecorder()

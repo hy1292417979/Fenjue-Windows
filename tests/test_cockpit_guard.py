@@ -118,11 +118,36 @@ class AccountTests(unittest.TestCase):
         self.source.initialize()
         self.manifest['apiKeys'][0]['allowedModels'] = ['other-model']
         self.write_manifest()
+        self.assertTrue(self.source.snapshot().token)
         with self.assertRaises(BindingError):
-            self.source.snapshot()
+            self.source.validate_model('test-model')
+        self.assertEqual(self.source.validate_model('other-model'), 'other-model')
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_request_shape_rejects_invalid_model_instructions_and_effort(self):
+        cases = (
+            {'model': ' ', 'input': 'hello'},
+            {'model': 'test-model', 'input': 'hello', 'instructions': 1},
+            {'model': 'test-model', 'input': 'hello', 'reasoning': {'effort': 1}},
+            {'model': 'test-model', 'input': 'hello', 'reasoning': None},
+        )
+        for payload in cases:
+            with self.subTest(payload=payload):
+                with self.assertRaises(ProtocolError):
+                    prepare(payload)
+
+    def test_request_shape_keeps_modern_codex_fields_without_silent_rewrite(self):
+        payload = {
+            'model': 'test-model', 'input': [], 'instructions': 'KEEP',
+            'reasoning': {'effort': 'high', 'summary': 'auto'},
+            'tools': [{'type': 'custom', 'name': 'apply_patch'}],
+            'metadata': {'client': 'codex'}, 'prompt_cache_key': 'session',
+        }
+        prepared = prepare(payload)
+        for key in ('input', 'instructions', 'reasoning', 'tools', 'metadata', 'prompt_cache_key'):
+            self.assertEqual(prepared[key], payload[key])
+
     def test_client_instructions_tools_and_explicit_effort_unchanged(self):
         p = {'model': 'test-model', 'instructions': 'EXACT', 'input': [{'type': 'reasoning', 'encrypted_content': 'OPAQUE'}],
              'tools': [{'type': 'custom', 'name': 'apply_patch'}], 'reasoning': {'effort': 'high'}, 'prompt_cache_key': 's'}
@@ -209,6 +234,31 @@ class GuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()['account_ref'], 'dynamic')
         self.assertFalse(response.json()['cockpit_same_account_comparison_available'])
+
+    async def test_dynamic_catalog_uses_cockpit_scope_without_pinning_or_metadata(self):
+        self.source.dynamic = True
+        self.source.snapshot = lambda: (_ for _ in ()).throw(BindingError('No pinned account'))
+        self.response = httpx.Response(200, json={'object': 'list', 'data': [
+            {'id': 'test-model', 'account': 'PRIVATE'}, {'id': 'other-model'}]})
+        response = await self.client.get('/v1/models', headers=self.auth)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {'object': 'list', 'data': [
+            {'id': 'test-model', 'object': 'model'}, {'id': 'other-model', 'object': 'model'}]})
+        self.assertEqual(self.requests[0].url.host, '127.0.0.1')
+        self.assertEqual(self.requests[0].headers['authorization'], 'Bearer COCKPIT_KEY')
+        with Ledger(Path(self.tmp.name)).db() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM calls').fetchone()[0], 0)
+
+    async def test_nonfinite_and_malformed_requests_never_reach_upstream(self):
+        for content in (
+                b'{"model":"test-model","input":"hello","temperature":1e999}',
+                b'{"model":"test-model","model":"other","input":"hello"}',
+                b'{"model":"test-model","input":"hello","instructions":12}',
+                b'{"model":"test-model","input":"hello","store":0}'):
+            response = await self.client.post('/v1/responses', content=content,
+                                               headers=self.auth | {'Content-Type': 'application/json'})
+            self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(self.requests, [])
 
     async def test_model_mismatch_never_reaches_codex_as_success(self):
         self.response = httpx.Response(200, json=output(model='other'))

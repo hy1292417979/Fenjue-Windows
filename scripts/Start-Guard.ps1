@@ -5,6 +5,8 @@ $pythonExe = Join-Path $projectRoot '.venv/Scripts/python.exe'
 if (-not (Test-Path -LiteralPath $pythonExe)) {
     & (Join-Path $PSScriptRoot 'Install-Fenjue.ps1') -Backend Cockpit
 }
+& $pythonExe -I -c 'import struct,sys; sys.exit(0 if sys.version_info[:2] == (3,12) and struct.calcsize(chr(80)) == 8 else 1)'
+if ($LASTEXITCODE -ne 0) { throw 'Existing .venv must use Python 3.12 x64. Run Install.cmd in a new extraction directory or rebuild this environment.' }
 $runtimePath = Join-Path $projectRoot 'runtime/guard'
 New-Item -ItemType Directory -Path $runtimePath -Force | Out-Null
 $identityName = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
@@ -13,7 +15,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Cannot secure guard runtime directory.' }
 function Test-FenjueGuard {
     try {
         $result = Invoke-RestMethod 'http://127.0.0.1:17878/health' -TimeoutSec 2
-        return ($result.service -eq 'fenjue-cockpit-guard' -and $result.version -eq '3.0')
+        return ($result.service -eq 'fenjue-cockpit-guard' -and $result.version -eq '3.1' -and $result.build -eq 'fenjue-outbound-2')
     } catch { return $false }
 }
 Push-Location $projectRoot

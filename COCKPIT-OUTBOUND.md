@@ -30,7 +30,7 @@
 
 `焚决.cmd` 开启；`Stop-Guard.cmd` 关闭；`Status-Guard.cmd` 看真实状态；`Restore-Cockpit.cmd` 校验备份并恢复原版转发程序（重启 Cockpit）。首次迁移请重启 Codex 并新开任务。
 
-只保护绑定接入密钥的 `gpt-*` / `codex*` HTTP Responses 与压缩；WebSocket 拒绝，其他模型和独立语音/图片接口保留 Cockpit 原处理，不宣称受保护。显式 medium/high 原样保留，只有缺省 effort 才用 max。
+只保护绑定接入密钥的 `gpt-*` / `codex*` HTTP Responses 与压缩；Responses WebSocket 升级请求继续由 Cockpit 原生处理，不宣称受焚决保护。其他模型和独立语音/图片接口也保留 Cockpit 原处理。显式 medium/high 原样保留，只有缺省 effort 才用 max。
 
 Cockpit 更新会覆盖自编译程序，不能保证更新后仍有补丁。状态工具会检测哈希/扩展接口，发现不匹配应停止声称已保护；不会自动覆盖新版程序。会话跨越开关时账号策略可能变化，建议新开任务。
 

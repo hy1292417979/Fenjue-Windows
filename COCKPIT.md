@@ -68,7 +68,7 @@ Cockpit 仍负责账号登录、授权刷新和提供已有账号引用。焚决
 - settings 仅保存账号引用，不保存 OAuth token。日志/账本仅存哈希、调用状态和校验元数据，不保存提示词、工具输出、原始推理或账号凭据。
 - `codex-url-rollback.local.json` 仅记录原 URL 和配置定位信息，不备份整份含密钥的 Codex 配置。只在 URL 仍归本工具所有时恢复，避免覆盖用户后来修改。
 - 复杂模型别名、限制或重映射当前采取拒绝接入，不绕过策略。HTTP(S) 代理沿用选中账号/Cockpit 的现有设置。
-- 不提供 WebSocket 代理或 Chat Completions 转换；不支持 store:true、previous_response_id、后台请求。要求完整 Responses 历史。
+- 不提供 WebSocket 代理；Responses WebSocket 升级请求继续交给 Cockpit 原生处理，不经过焚决校验层。也不做 Chat Completions 转换；不支持 store:true、previous_response_id、后台请求。要求完整 Responses 历史。
 - 取消、断线和失败可能仍消耗额度。服务不自动重试，但 Codex 自身可能按客户端策略重试。
 
 ## 验收记录

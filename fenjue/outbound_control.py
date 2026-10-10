@@ -16,7 +16,7 @@ from .guard_config import atomic_replace
 
 STATE = Path(__file__).resolve().parents[1] / 'runtime/guard'
 INSTALL = Path(os.environ.get('LOCALAPPDATA', str(Path.home() / 'AppData/Local'))) / 'Cockpit Tools'
-BUILD = 'fenjue-outbound-1'
+BUILD = 'fenjue-outbound-2'
 
 
 def digest(value):
@@ -87,7 +87,8 @@ def configure(action, state=STATE, install=INSTALL, source=None, drain_seconds=3
         value['installed_binary_matches'] = hashlib.sha256((install / 'cockpit-cliproxy.exe').read_bytes()).hexdigest() == deployment['patched_sha256']
         try:
             with httpx.Client(trust_env=False, timeout=3) as client:
-                value['guard_ready'] = client.get('http://127.0.0.1:17878/health').json().get('version') == '3.0'
+                health = client.get('http://127.0.0.1:17878/health').json()
+                value['guard_ready'] = health.get('version') == '3.1' and health.get('build') == BUILD
         except Exception:
             value['guard_ready'] = False
         value['takeover_active'] = value.get('enabled') is True and value.get('key_matches') is True and value['installed_binary_matches'] and value['guard_ready']
@@ -105,7 +106,7 @@ def configure(action, state=STATE, install=INSTALL, source=None, drain_seconds=3
         key = json.loads((state / 'gateway-key.local.json').read_text())['api_key']
         with httpx.Client(trust_env=False, timeout=5) as client:
             health = client.get('http://127.0.0.1:17878/health').json()
-        if health.get('version') != '3.0' or not health.get('cockpit_outbound_supported'):
+        if health.get('version') != '3.1' or health.get('build') != BUILD or not health.get('cockpit_outbound_supported'):
             raise ValueError('Outbound guard v3 is not ready; Cockpit left unchanged.')
         value = {'schema': 1, 'mode': 'dynamic', 'enabled': True, 'client_key_sha256': digest(local_key),
                  'boot_id': boot_id(),

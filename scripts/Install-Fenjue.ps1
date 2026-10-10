@@ -72,7 +72,7 @@ try {
     }
     Write-Output 'Installation complete. Existing configuration is preserved.'
     if ($Backend -eq 'Cockpit') {
-        Write-Output 'Run Start-Cockpit.cmd to use Cockpit local access. No Sub2API installation is needed.'
+        Write-Output 'Run Start-Guard.cmd for Cockpit outbound protection after the matching Cockpit patch is built and installed; see COCKPIT.md. No Sub2API installation is needed.'
     } else {
         Write-Output 'Run Sub2API-Status.cmd for status, or scripts/Start-Fenjue.ps1 for the legacy workbench.'
     }

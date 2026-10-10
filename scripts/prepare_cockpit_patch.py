@@ -1,6 +1,7 @@
 """Reproducible mechanical overlay onto the exact upstream checkout."""
 import shutil
 import subprocess
+import argparse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -8,10 +9,15 @@ SOURCE = ROOT / 'runtime/cockpit-source'
 REVISION = '5273335ef9a96611336c4b927759c125a0f092d7'
 
 def main():
-    revision = subprocess.check_output(['git', '-C', str(SOURCE), 'rev-parse', 'HEAD'], text=True).strip()
+    parser = argparse.ArgumentParser(description='Overlay Fenjue integration onto a fixed Cockpit checkout.')
+    parser.add_argument('--source', type=Path, default=ROOT / 'runtime/cockpit-source',
+                        help='Cockpit source checkout root (default: runtime/cockpit-source).')
+    args = parser.parse_args()
+    source_root = args.source.resolve()
+    revision = subprocess.check_output(['git', '-C', str(source_root), 'rev-parse', 'HEAD'], text=True).strip()
     if revision != REVISION:
         raise SystemExit('Unexpected Cockpit revision; do not patch an unknown version.')
-    target = SOURCE / 'sidecars/cockpit-cliproxy'
+    target = source_root / 'sidecars/cockpit-cliproxy'
     for source in (ROOT / 'cockpit-patch').glob('fenjue_*.go'):
         shutil.copyfile(source, target / source.name)
     path = target / 'relay_server.go'

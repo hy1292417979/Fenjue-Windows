@@ -8,6 +8,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import math
 import secrets
 import sqlite3
 import time
@@ -40,7 +41,12 @@ def strict_json(raw):
         return result
     def reject(value):
         raise ValueError('nonfinite')
-    return json.loads(raw, object_pairs_hook=unique, parse_constant=reject)
+    def finite(value):
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError('nonfinite')
+        return number
+    return json.loads(raw, object_pairs_hook=unique, parse_constant=reject, parse_float=finite)
 
 
 class Ledger:
@@ -115,6 +121,22 @@ class Backend:
             raise ProtocolError('Invalid account model catalog.')
         return [{'id': m.get('slug', m.get('id')), 'object': 'model'} for m in items
                 if isinstance(m, dict) and isinstance(m.get('slug', m.get('id')), str)]
+
+    async def cockpit_catalog(self):
+        # Cockpit owns a dynamic pool's model catalog; never pick an arbitrary
+        # OAuth account merely to answer a non-generating discovery request.
+        local_url, local_key = self.source.files()[-2:]
+        async with httpx.AsyncClient(transport=self.transport, trust_env=False,
+                                     follow_redirects=False, timeout=20) as client:
+            result = await client.get(local_url + '/v1/models',
+                                      headers={'Authorization': 'Bearer ' + local_key})
+        if result.status_code != 200:
+            raise ProtocolError(f'Cockpit model catalog returned HTTP {result.status_code}.')
+        value = strict_json(result.content)
+        if not isinstance(value, dict) or not isinstance(value.get('data'), list):
+            raise ProtocolError('Invalid Cockpit model catalog.')
+        return [{'id': item['id'], 'object': 'model'} for item in value['data']
+                if isinstance(item, dict) and isinstance(item.get('id'), str)]
 
     async def execute(self, route, payload, incoming, snapshot, compact=False, on_headers=None):
         endpoint = (DIRECT if route == 'codex_http' else snapshot.local_url + '/v1') + '/responses'
@@ -237,7 +259,7 @@ def create_app(source, local_key, directory=STATE, transport=None):
 
     @app.get('/health')
     async def health():
-        return {'service': 'fenjue-cockpit-guard', 'version': '3.0', 'cockpit_outbound_supported': True,
+        return {'service': 'fenjue-cockpit-guard', 'version': '3.1', 'build': 'fenjue-outbound-2', 'cockpit_outbound_supported': True,
                 'compact_protocol': 'responses_trigger', 'quality_gain_verified': False}
 
     @app.get('/')
@@ -321,9 +343,22 @@ def create_app(source, local_key, directory=STATE, transport=None):
     @app.get('/v1/models')
     async def models():
         try:
-            return {'object': 'list', 'data': await backend.catalog(snapshot())}
+            dynamic = source.settings().get('mode') == 'dynamic'
+            info = None if dynamic else snapshot()
+            data = await backend.cockpit_catalog() if dynamic else await backend.catalog(info)
+            validator = getattr(source, 'validate_model', None)
+            if validator:
+                visible = []
+                for item in data:
+                    try:
+                        validator(item['id'], info)
+                    except BindingError:
+                        continue
+                    visible.append(item)
+                data = visible
+            return {'object': 'list', 'data': data}
         except (ProtocolError, ValueError, httpx.HTTPError, TimeoutError):
-            raise HTTPException(502, 'Pinned account model catalog is unavailable.') from None
+            raise HTTPException(502, 'Cockpit model catalog is unavailable.') from None
 
     async def body(request):
         raw = bytearray()
@@ -381,6 +416,12 @@ def create_app(source, local_key, directory=STATE, transport=None):
         # For Cockpit ingress, bind this request to the identity Cockpit chose
         # for this call. Direct guard ingress retains the legacy pinned route.
         info = cockpit_snapshot(request) if outbound else snapshot()
+        validator = getattr(source, 'validate_model', None)
+        if validator:
+            try:
+                validator(prepared['model'], info)
+            except BindingError:
+                raise HTTPException(409, 'The requested model is rejected by Cockpit policy.') from None
         route = 'codex_http' if outbound else select_route(info, request.headers.get('x-fenjue-route', 'auto'))
         if route == 'auto':
             report = ledger.latest_check()
@@ -394,7 +435,10 @@ def create_app(source, local_key, directory=STATE, transport=None):
                 raise HTTPException(503, str(exc)) from None
             route = 'cockpit' if route == 'sub2api' else route
             select_route(info, route)
-        sid = request.headers.get('session_id') or request.headers.get('conversation_id') or prepared.get('prompt_cache_key')
+        # Cockpit/native Codex has emitted both legacy underscore and modern
+        # hyphenated session names.  Bind either spelling before forwarding.
+        sid = (request.headers.get('session_id') or request.headers.get('session-id')
+               or request.headers.get('conversation_id') or prepared.get('prompt_cache_key'))
         continuation = any(item.get('type') not in (None, 'message') for item in prepared['input'])
         if not isinstance(sid, str) or not sid or len(sid) > 512:
             if continuation:

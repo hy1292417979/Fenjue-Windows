@@ -29,9 +29,15 @@ class CockpitSource:
     def __init__(self, path=DEFAULT_CONFIG):
         self.path = Path(path)
 
-    def connection(self):
+    @classmethod
+    def from_config(cls, raw):
+        """Return the selected loopback endpoint from one parsed config.
+
+        Callers that also need the manifest should parse the config once and
+        use this method so a Cockpit rewrite cannot mix a new key with an old
+        endpoint (or vice versa).
+        """
         try:
-            raw = json.loads(self.path.read_text(encoding='utf-8-sig'))
             host, port = raw['host'], raw['port']
             keys = raw['api-keys']
             if host not in ('127.0.0.1', 'localhost', '::1'):
@@ -52,6 +58,13 @@ class CockpitSource:
             return f'http://{hostname}:{port}', selected
         except (OSError, ValueError, KeyError, TypeError):
             raise HTTPException(503, '无法读取 Cockpit 接入配置。请先打开 Cockpit，并启用本地接入。') from None
+
+    def connection(self):
+        try:
+            raw = json.loads(self.path.read_text(encoding='utf-8-sig'))
+        except (OSError, ValueError):
+            raise HTTPException(503, '无法读取 Cockpit 接入配置。请先打开 Cockpit，并启用本地接入。') from None
+        return self.from_config(raw)
 
 
 def create_app(source, key, transport=None, timeout=300):

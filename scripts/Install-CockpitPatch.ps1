@@ -61,7 +61,7 @@ try {
         } else {
             if (Test-Path -LiteralPath $backupExe) { throw 'Unregistered backup exists; inspect it before continuing.' }
             Copy-Item -LiteralPath $targetExe -Destination $backupExe
-            $record = [pscustomobject]@{schema=1;original_sha256=(File-Hash $targetExe);patched_sha256=(File-Hash $builtExe);source_revision='5273335ef9a96611336c4b927759c125a0f092d7';build='fenjue-outbound-1'}
+            $record = [pscustomobject]@{schema=1;original_sha256=(File-Hash $targetExe);patched_sha256=(File-Hash $builtExe);source_revision='5273335ef9a96611336c4b927759c125a0f092d7';build='fenjue-outbound-2'}
             if ((File-Hash $backupExe) -ne $record.original_sha256) { throw 'Backup verification failed.' }
         }
         $record.patched_sha256 = File-Hash $builtExe

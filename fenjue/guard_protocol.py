@@ -8,12 +8,17 @@ class ProtocolError(ValueError):
 
 
 def prepare(payload, default_effort='max'):
-    if not isinstance(payload, dict) or not isinstance(payload.get('model'), str) or not payload['model']:
+    if (not isinstance(payload, dict) or not isinstance(payload.get('model'), str)
+            or not payload['model'].strip() or len(payload['model']) > 256):
         raise ProtocolError('An explicit model is required.')
     if not isinstance(payload.get('input'), (str, list)):
         raise ProtocolError('Full input history is required.')
     if any(k in payload for k in ('previous_response_id', 'conversation')):
         raise ProtocolError('Use full input history; server-side response references are not supported.')
+    if 'store' in payload and type(payload['store']) is not bool:
+        raise ProtocolError('store must be a boolean.')
+    if 'background' in payload and type(payload['background']) is not bool:
+        raise ProtocolError('background must be a boolean.')
     if payload.get('store') not in (None, False) or payload.get('background'):
         raise ProtocolError('This stateless gateway requires store:false and foreground requests.')
     if type(payload.get('stream', False)) is not bool:
@@ -23,11 +28,14 @@ def prepare(payload, default_effort='max'):
         outgoing['input'] = [{'role': 'user', 'content': outgoing['input']}]
     if any(not isinstance(item, dict) for item in outgoing['input']):
         raise ProtocolError('Input items must be objects.')
+    if 'instructions' in outgoing and not isinstance(outgoing['instructions'], str):
+        raise ProtocolError('instructions must be a string.')
     reasoning = outgoing.setdefault('reasoning', {'effort': default_effort})
     if not isinstance(reasoning, dict):
         raise ProtocolError('Invalid reasoning configuration.')
     reasoning.setdefault('effort', default_effort)
-    if reasoning['effort'] not in ('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'):
+    if (not isinstance(reasoning['effort'], str)
+            or reasoning['effort'] not in ('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra')):
         raise ProtocolError('Invalid reasoning effort.')
     include = outgoing.setdefault('include', [])
     if not isinstance(include, list) or any(not isinstance(v, str) for v in include):

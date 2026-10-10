@@ -1,6 +1,7 @@
 package main
 
-// Fenjue extension for Cockpit v1.3.66. Only HTTP Responses for one local key.
+// Fenjue extension for Cockpit v1.3.66. HTTP Responses requests for one local
+// key. Responses WebSocket requests remain on Cockpit's native handler.
 // Control lives next to the binary, outside Cockpit's generated configuration.
 import (
 	"bytes"
@@ -24,7 +25,7 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-const fenjueBuild = "fenjue-outbound-1"
+const fenjueBuild = "fenjue-outbound-2"
 const fenjueEndpoint = "http://127.0.0.1:17878/cockpit/v1/responses"
 
 var fenjueMu sync.Mutex
@@ -87,6 +88,17 @@ func fenjueResponsePath(path string) bool {
 	return path == "/v1/fenjue/probe" || path == "/v1/responses" || path == "/v1/responses/compact" || path == "/v1/chat/completions/v1/responses" || path == "/v1/chat/completions/v1/responses/compact"
 }
 
+// Responses WebSocket has a separate native Cockpit handler.  The Fenjue
+// guard only validates HTTP Responses; never turn a WebSocket upgrade into a
+// misleading 409 or feed its frames to the HTTP guard.
+func isFenjueResponsesWebsocket(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(r.Header.Get("Upgrade")), "websocket") &&
+		strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade")
+}
+
 // Capture before Cockpit's policy rewrite, but authenticate and enforce policy
 // before this copy is ever used. No raw body is persisted or logged here.
 func fenjueCapture() gin.HandlerFunc {
@@ -144,9 +156,14 @@ func (s *relayServer) fenjueMiddleware() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+		if isFenjueResponsesWebsocket(c.Request) {
+			fenjueMu.Unlock()
+			c.Next()
+			return
+		}
 		if c.Request.Method != http.MethodPost {
 			fenjueMu.Unlock()
-			writeAPIError(c, 409, "Fenjue protects HTTP Responses only; disable WebSockets", "fenjue_transport_unsupported")
+			writeAPIError(c, 409, "Fenjue protects HTTP Responses only; WebSockets remain on Cockpit", "fenjue_transport_unsupported")
 			c.Abort()
 			return
 		}
@@ -272,7 +289,7 @@ func (s *relayServer) fenjueMiddleware() gin.HandlerFunc {
 			writeAPIError(c, 500, "Fenjue request construction failed", "fenjue_request_failed")
 			return
 		}
-		for _, key := range []string{"Session_id", "Conversation_id", "X-Codex-Turn-State", "X-Client-Request-Id", "OpenAI-Beta", "Originator", "User-Agent", "X-Codex-Beta-Features"} {
+		for _, key := range []string{"Session_id", "Conversation_id", "X-Codex-Turn-State", "X-Codex-Turn-Metadata", "X-Codex-Window-Id", "Thread-Id", "Session-Id", "X-Client-Request-Id", "OpenAI-Beta", "Originator", "User-Agent", "X-Codex-Beta-Features", "X-OpenAI-Internal-Codex-Responses-Lite"} {
 			if value := c.Request.Header.Get(key); value != "" {
 				req.Header.Set(key, value)
 			}
