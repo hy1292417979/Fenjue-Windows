@@ -19,3 +19,4 @@ wheelhouse/
 *.p12
 auth.json
 config.local.*
+retry_proxy/state.json

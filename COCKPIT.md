@@ -43,7 +43,7 @@ Cockpit 仍负责账号登录、授权刷新和提供已有账号引用。焚决
 - 旧压缩入口转换为原生 `/responses` 加末尾 compaction_trigger，一次调用完成，不先请求旧地址再重试。保留全部加密输出项，不使用文字摘要替代。客户端直接发送新版压缩触发项也可原样通过。
 - 使用 Codex 标准 session_id/conversation_id/prompt_cache_key 绑定会话。同一会话不能静默更换账号或路由。
 - 校验完成后才释放响应和工具事件；等待时发送保活消息。保留 x-codex-turn-state 等续接头。代价是文字不再逐字即时出现。
-- 不增加“自我复核”模型调用，不重写提示词，不自动重试或降级模型。每次请求最多 300 秒、正文/返回各 32 MiB，不默默截断历史。
+- 不增加“自我复核”模型调用，不重写提示词，不降级模型。唯一的自动重试是“上游忙”：连不上 OpenAI（ConnectError/ConnectTimeout）、HTTP 500/502/503/504/529，或返回 `server_is_overloaded`/`slow_down`（Codex 显示为 “Selected model is at capacity”），且尚未产出任何内容时，用同一账号、同一模型和强度、完全相同的请求，分别等 2/5/10 秒重发，最多 3 次（`settings.local.json` 里的 `busy_retries` 可设 0–3，0 为关闭）。用尽后把 OpenAI 原错误码交还 Codex，账本状态记为 `failed_upstream_busy`。额度用尽（429 usage limit）、400/401 等错误不重试。每次请求最多 300 秒、正文/返回各 32 MiB，不默默截断历史。
 
 原生模型目录仅来自选定账号；Cockpit 聚合目录中的其他厂商模型不属于本保护层支持范围。当前 Codex 静态目录尚未改动，后续启用时应只选择该 GPT 账号实际可用的模型。
 
@@ -69,7 +69,7 @@ Cockpit 仍负责账号登录、授权刷新和提供已有账号引用。焚决
 - `codex-url-rollback.local.json` 仅记录原 URL 和配置定位信息，不备份整份含密钥的 Codex 配置。只在 URL 仍归本工具所有时恢复，避免覆盖用户后来修改。
 - 复杂模型别名、限制或重映射当前采取拒绝接入，不绕过策略。HTTP(S) 代理沿用选中账号/Cockpit 的现有设置。
 - 不提供 WebSocket 代理；Responses WebSocket 升级请求继续交给 Cockpit 原生处理，不经过焚决校验层。也不做 Chat Completions 转换；不支持 store:true、previous_response_id、后台请求。要求完整 Responses 历史。
-- 取消、断线和失败可能仍消耗额度。服务不自动重试，但 Codex 自身可能按客户端策略重试。
+- 取消、断线和失败可能仍消耗额度。除上面的“上游忙”重试外服务不自动重试，Codex 自身也可能按客户端策略重试。
 
 ## 验收记录
 

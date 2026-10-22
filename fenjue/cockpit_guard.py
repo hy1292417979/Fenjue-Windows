@@ -28,6 +28,43 @@ from .sse import iter_response_events
 
 PORT = 17878
 MAX_BYTES = 32 * 1024 * 1024
+
+# Upstream "busy" rejections happen before the model does any work: the
+# connection never opened, or OpenAI answered "model at capacity".  Those are
+# resubmitted unchanged -- same account, model, effort and history -- after a
+# short wait.  Nothing else is retried, and nothing is ever downgraded.
+BUSY_HTTP_STATUS = frozenset({500, 502, 503, 504, 529})
+BUSY_CODES = frozenset({'server_is_overloaded', 'slow_down', 'overloaded'})
+BUSY_DELAYS = (2, 5, 10)
+UNREACHABLE = 'upstream_unreachable'
+
+
+class UpstreamBusy(ProtocolError):
+    """Upstream refused before doing work; an identical resubmission is safe."""
+    def __init__(self, message, code='server_is_overloaded'):
+        super().__init__(message)
+        self.code = code
+        self.attempts = 1
+
+
+def busy_code(event):
+    """Return the overload code of an SSE/JSON error event, else None."""
+    if not isinstance(event, dict):
+        return None
+    candidates = [event, event.get('error')]
+    response = event.get('response')
+    if isinstance(response, dict):
+        candidates.append(response.get('error'))
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        code = item.get('code') or item.get('type')
+        message = str(item.get('message') or '').lower()
+        if code in BUSY_CODES:
+            return code
+        if 'at capacity' in message or 'overloaded' in message:
+            return code if isinstance(code, str) and code else 'server_is_overloaded'
+    return None
 STATE = Path('runtime/guard')
 
 
@@ -138,7 +175,48 @@ class Backend:
         return [{'id': item['id'], 'object': 'model'} for item in value['data']
                 if isinstance(item, dict) and isinstance(item.get('id'), str)]
 
+    busy_delays = BUSY_DELAYS
+
     async def execute(self, route, payload, incoming, snapshot, compact=False, on_headers=None):
+        settings = self.source.settings()
+        retries = settings.get('busy_retries', len(self.busy_delays))
+        if type(retries) is not int or not 0 <= retries <= len(self.busy_delays):
+            retries = len(self.busy_delays)
+        deadline = time.monotonic() + settings.get('timeout_seconds', 300)
+        delivered, reasons = [], []
+
+        def headers_once(value):
+            # The client can only receive one set of HTTP headers.
+            if not delivered:
+                delivered.append(value)
+                if on_headers:
+                    on_headers(value)
+
+        attempt = 0
+        while True:
+            outgoing = incoming
+            turn_state = delivered[0].get('x-codex-turn-state') if delivered else None
+            if turn_state and not any(str(k).lower() == 'x-codex-turn-state' for k in incoming):
+                # Keep the retry consistent with the turn state Codex already holds.
+                outgoing = dict(incoming) | {'x-codex-turn-state': turn_state}
+            try:
+                result = await self.attempt(route, payload, outgoing, snapshot, compact, headers_once, deadline)
+            except UpstreamBusy as exc:
+                reasons.append(exc.code)
+                if attempt >= retries or deadline - time.monotonic() <= self.busy_delays[attempt] + 1:
+                    exc.attempts = attempt + 1
+                    raise
+                await asyncio.sleep(self.busy_delays[attempt])
+                attempt += 1
+                continue
+            if delivered and result[2] != delivered[0]:
+                result = (result[0], result[1], delivered[0], result[3])
+            result[3]['upstream_attempts'] = attempt + 1
+            if reasons:
+                result[3]['busy_retries'] = reasons
+            return result
+
+    async def attempt(self, route, payload, incoming, snapshot, compact, on_headers, deadline):
         endpoint = (DIRECT if route == 'codex_http' else snapshot.local_url + '/v1') + '/responses'
         native_compact = compact and route == 'codex_http'
         if native_compact:
@@ -147,13 +225,33 @@ class Backend:
             payload = prepare_compact(payload, self.source.settings().get('default_effort', 'max'))
         elif compact:
             endpoint += '/compact'
-        limit = self.source.settings().get('timeout_seconds', 300)
         started = time.monotonic()
         raw = bytearray()
-        with anyio.fail_after(limit):
+        with anyio.fail_after(max(deadline - started, 0.001)):
             async with self.client(snapshot, route) as client:
-                async with client.stream('POST', endpoint, json=payload, headers=snapshot.headers(route, incoming)) as r:
+                try:
+                    opened = client.stream('POST', endpoint, json=payload, headers=snapshot.headers(route, incoming))
+                    r = await opened.__aenter__()
+                except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ProxyError) as exc:
+                    # The request never left this machine; resubmitting is safe.
+                    raise UpstreamBusy(f'Upstream unreachable ({type(exc).__name__}).', UNREACHABLE) from None
+                try:
                     if r.status_code != 200:
+                        code = None
+                        if r.status_code in BUSY_HTTP_STATUS or r.status_code == 429:
+                            body = bytearray()
+                            async for chunk in r.aiter_bytes():
+                                body.extend(chunk)
+                                if len(body) > 65536:
+                                    break
+                            try:
+                                code = busy_code(json.loads(bytes(body)))
+                            except ValueError:
+                                code = None
+                            if code is None and r.status_code in BUSY_HTTP_STATUS:
+                                code = f'http_{r.status_code}'
+                        if code:
+                            raise UpstreamBusy(f'Upstream HTTP {r.status_code} ({code}); same account/model resubmitted only.', code)
                         raise ProtocolError(f'Upstream HTTP {r.status_code}; no account, model or route fallback was attempted.')
                     response_headers = {name: r.headers[name] for name in ('x-codex-turn-state', 'x-request-id') if name in r.headers}
                     if on_headers:
@@ -163,6 +261,8 @@ class Backend:
                         raw.extend(chunk)
                         if len(raw) > MAX_BYTES:
                             raise ProtocolError('Upstream response exceeded 32 MiB; response was not truncated.')
+                finally:
+                    await opened.__aexit__(None, None, None)
         if incoming.get('x-fenjue-ingress') == 'cockpit':
             selected = getattr(self.source, 'selected_snapshot', None)
             current = (selected(incoming.get('x-fenjue-oauth', ''),
@@ -195,6 +295,15 @@ class Backend:
                 if not block:
                     continue
                 data = '\n'.join(s[5:].lstrip(' ') for s in block if s.startswith('data:'))
+                if data and not state['items'] and ('"error"' in data or 'response.failed' in data):
+                    try:
+                        event = strict_json(data)
+                    except ValueError:
+                        event = None
+                    if isinstance(event, dict) and event.get('type') in ('error', 'response.failed'):
+                        code = busy_code(event)
+                        if code:
+                            raise UpstreamBusy(f'Upstream model at capacity ({code}); nothing was generated.', code)
                 terminal = reconcile(data, payload, state) if data else None
                 if terminal is not None:
                     response = terminal.response
@@ -235,7 +344,12 @@ def create_app(source, local_key, directory=STATE, transport=None):
 
     @app.exception_handler(HTTPException)
     async def error(request, exc):
-        return JSONResponse({'error': {'type': 'fenjue_guard_error', 'message': exc.detail}}, exc.status_code)
+        error = {'type': 'fenjue_guard_error', 'message': exc.detail}
+        code = (exc.headers or {}).get('X-Fenjue-Upstream-Code')
+        if code:
+            # Pass OpenAI's own code through so Codex reports it as usual.
+            error['code'] = code
+        return JSONResponse({'error': error}, exc.status_code, headers=exc.headers)
 
     @app.middleware('http')
     async def authenticate(request, call_next):
@@ -397,6 +511,12 @@ def create_app(source, local_key, directory=STATE, transport=None):
             if rid:
                 ledger.finish(rid, 'cancelled_completion_unknown', {})
             raise
+        except UpstreamBusy as exc:
+            if rid:
+                ledger.finish(rid, 'failed_upstream_busy', {'error_type': 'UpstreamBusy', 'detail': str(exc),
+                    'code': exc.code, 'upstream_attempts': exc.attempts})
+            raise HTTPException(503, f'{exc} Gave up after {exc.attempts} attempt(s); try again shortly.',
+                                headers={'X-Fenjue-Upstream-Code': exc.code}) from None
         except Exception as exc:
             if rid:
                 ledger.finish(rid, 'failed_or_unknown', {'error_type': type(exc).__name__,
@@ -505,7 +625,13 @@ def create_app(source, local_key, directory=STATE, transport=None):
                 for frame in frames:
                     yield frame
             except HTTPException as exc:
-                yield ('event: error\ndata: ' + json.dumps({'type': 'error', 'error': {'code': 'fenjue_guard_rejected', 'message': exc.detail}}) + '\n\n').encode()
+                code = (exc.headers or {}).get('X-Fenjue-Upstream-Code')
+                if code:
+                    failed = {'type': 'response.failed', 'response': {'object': 'response', 'status': 'failed',
+                              'error': {'code': code, 'message': exc.detail}}}
+                    yield ('event: response.failed\ndata: ' + json.dumps(failed) + '\n\n').encode()
+                else:
+                    yield ('event: error\ndata: ' + json.dumps({'type': 'error', 'error': {'code': 'fenjue_guard_rejected', 'message': exc.detail}}) + '\n\n').encode()
             finally:
                 if not task.done():
                     task.cancel()
